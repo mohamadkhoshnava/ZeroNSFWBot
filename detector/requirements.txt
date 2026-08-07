@@ -1,5 +1,5 @@
 # Runtime dependencies only — torch/timm live in the build stage.
-fastapi==0.115.6
+fastapi==0.141.1
 uvicorn[standard]==0.34.0
 onnxruntime==1.20.1
 pillow==11.1.0
