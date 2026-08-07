@@ -1,0 +1,226 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push supersedes the run in flight for the same branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # CI never needs incremental artifacts and they are slow to cache.
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -D warnings
+
+jobs:
+  rust:
+    name: Rust — fmt, clippy, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: bot
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bot
+
+      - name: Formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Covers the locale-completeness and callback-encoding guards too: a
+      # filter added without its four translations fails right here.
+      - name: Tests
+        run: cargo test --all-targets
+
+      - name: Docs build without warnings
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --document-private-items
+
+  python:
+    name: Detector — pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: detector
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: detector/requirements-dev.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      # The real ONNX model is a build artefact, so these run against a stubbed
+      # classifier and exercise batching and per-image error isolation.
+      - run: python -m pytest
+
+  images:
+    name: Docker — build and smoke test
+    runs-on: ubuntu-latest
+    # The detector's first build downloads torch and exports the model. Later
+    # runs hit the layer cache and finish in about a minute.
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the bot image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./bot
+          push: false
+          load: true
+          tags: zeronsfw-bot:ci
+          cache-from: type=gha,scope=bot
+          cache-to: type=gha,mode=max,scope=bot
+
+      - name: Build the detector image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./detector
+          push: false
+          load: true
+          tags: zeronsfw-detector:ci
+          cache-from: type=gha,scope=detector
+          cache-to: type=gha,mode=max,scope=detector
+
+      # Proves the ONNX export actually produced a loadable model. A broken
+      # export otherwise only surfaces on the first real comment in production.
+      - name: Start the detector
+        run: |
+          docker run -d --name detector -p 8000:8000 zeronsfw-detector:ci
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8000/health | grep -q '"model_loaded":true'; then
+              echo "detector ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::detector never became healthy"
+          docker logs detector
+          exit 1
+
+      - name: Model metadata
+        run: curl -fsS http://localhost:8000/model
+
+      # The SFW samples are committed, so there is nothing to generate and no
+      # Pillow to install on the runner.
+      - name: Score the sample images
+        run: ./scripts/eval_images.sh
+
+      # The committed samples are gradients, shapes and text. Anything the model
+      # calls NSFW here means the export mapped the class labels backwards —
+      # which would invert every verdict the bot makes.
+      - name: Samples must not be flagged
+        run: |
+          python3 - <<'PY'
+          import base64, json, pathlib, sys, urllib.request
+
+          images = [
+              {"id": p.name, "data": base64.b64encode(p.read_bytes()).decode()}
+              for p in sorted(pathlib.Path("assets/test_images/sfw").glob("*.png"))
+          ]
+          req = urllib.request.Request(
+              "http://localhost:8000/classify",
+              data=json.dumps({"images": images}).encode(),
+              headers={"Content-Type": "application/json"},
+          )
+          results = json.loads(urllib.request.urlopen(req, timeout=120).read())["results"]
+
+          failed = False
+          for r in results:
+              print(f"{r['nsfw'] * 100:6.2f}%  {r['id']}")
+              if r["nsfw"] >= 0.5:
+                  print(f"::error::{r['id']} scored {r['nsfw']:.3f} — labels may be inverted")
+                  failed = True
+          sys.exit(1 if failed else 0)
+          PY
+
+      - name: Detector logs
+        if: failure()
+        run: docker logs detector
+
+      - name: Stop the detector
+        if: always()
+        run: docker rm -f detector || true
+
+  compose:
+    name: Compose config is valid
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # `config` resolves every variable and interpolation, so a typo in a
+      # service name or a missing required variable fails here rather than on
+      # someone's first `docker compose up`.
+      - name: Validate docker-compose.yml
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml config --quiet
+
+      # Every key the example documents must be one the bot actually reads, and
+      # vice versa — a silently ignored setting is worse than a missing one.
+      - name: .env.example matches the code
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, sys
+
+          example = {
+              line.split("=", 1)[0]
+              for line in pathlib.Path(".env.example").read_text().splitlines()
+              if re.match(r"^[A-Z][A-Z0-9_]*=", line)
+          }
+          source = pathlib.Path("bot/src/config.rs").read_text()
+          # The turbofish in `num::<usize>("...")` is optional.
+          used = set(
+              re.findall(r'(?:req|opt|num|flag|parsed)(?:::<[^>]+>)?\("([A-Z0-9_]+)"', source)
+          )
+          used |= set(re.findall(r'env::var\("([A-Z0-9_]+)"\)', source))
+
+          # Read elsewhere: by the logging setup, by compose, or by the detector.
+          external = {
+              "RUST_LOG", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB",
+              "POSTGRES_PORT", "DETECTOR_PORT", "DETECTOR_THREADS",
+              "DETECTOR_MODEL_ID", "DETECTOR_LOG_LEVEL", "OCR_LANGS",
+          }
+
+          undocumented = used - example
+          unread = example - used - external
+
+          for name in sorted(undocumented):
+              print(f"::error::{name} is read by the bot but missing from .env.example")
+          for name in sorted(unread):
+              print(f"::error::{name} is in .env.example but nothing reads it")
+
+          sys.exit(1 if undocumented or unread else 0)
+          PY

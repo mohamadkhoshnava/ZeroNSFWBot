@@ -78,6 +78,16 @@ independent evidence — in three more places.
   reports, where a credit under every ban would turn moderation into
   advertising. Configurable via `DEVELOPER_CHANNEL`; empty removes it.
 
+- **Continuous integration.** `ci.yml` runs formatting, clippy, the Rust test
+  suite, rustdoc, the detector's pytest suite, both Docker builds, and a
+  compose-config check on every push and pull request. Two checks are specific
+  to this project's failure modes: the built detector must score the committed
+  SFW samples below 50% (a backwards ONNX label mapping would invert every
+  verdict and nothing else would notice), and `.env.example` must match the
+  variables `config.rs` actually reads in both directions.
+- **`audit.yml`** — weekly `cargo audit` and a gitleaks secret scan, plus
+  Dependabot for cargo, pip, Docker and Actions.
+
 ### Changed
 
 - `/info` counts private-chat users (`started_bot`) rather than every account

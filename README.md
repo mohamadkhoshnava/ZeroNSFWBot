@@ -228,6 +228,30 @@ make test          # Rust unit + integration tests
 make detector-test # Python tests, in detector/.venv
 ```
 
+### CI
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and
+pull request:
+
+| Job | What it catches |
+|---|---|
+| **Rust** | `fmt --check`, `clippy -D warnings`, the full test suite, `cargo doc -D warnings` |
+| **Detector** | `pytest` against a stubbed classifier — batching and per-image error isolation |
+| **Images** | Both Dockerfiles build; the detector starts, loads the model, and scores the committed SFW samples |
+| **Compose** | `docker compose config` resolves, and `.env.example` matches what `config.rs` actually reads |
+
+Two of those are worth explaining. The image job asserts none of the synthetic
+samples scores above 50% — if the ONNX export ever maps the class labels
+backwards, every verdict the bot makes inverts, and nothing else would notice.
+The compose job fails when a setting is added to `config.rs` without being
+documented, or documented without being read, because a silently ignored
+setting is worse than a missing one.
+
+[`audit.yml`](.github/workflows/audit.yml) runs `cargo audit` and a gitleaks
+scan weekly and whenever dependencies change. The secret scan is not decorative
+here: the bot token and database password live in `.env`, and one careless
+`git add -A` is all it takes.
+
 Queries are runtime-checked rather than macro-checked, so neither the build nor
 the test suite needs a live database.
 

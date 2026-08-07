@@ -1,0 +1,58 @@
+name: Security audit
+
+on:
+  push:
+    paths:
+      - "bot/Cargo.lock"
+      - "bot/Cargo.toml"
+      - "detector/requirements*.txt"
+      - ".github/workflows/audit.yml"
+  pull_request:
+    paths:
+      - "bot/Cargo.lock"
+      - "bot/Cargo.toml"
+      - "detector/requirements*.txt"
+  # A dependency can become vulnerable without this repository changing at all,
+  # so the schedule matters more than the push trigger.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - run: cargo audit --deny warnings
+        working-directory: bot
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Gitleaks needs history to scan commits, not just the tree.
+          fetch-depth: 0
+
+      # This repository handles a live bot token and a database password. Both
+      # live only in .env, which is gitignored — this is the check that keeps it
+      # that way after a careless `git add -A`.
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
