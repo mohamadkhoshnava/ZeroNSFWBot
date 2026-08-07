@@ -339,7 +339,7 @@ async fn notify_admins(
     };
 
     for admin_id in targets {
-        let lang = db::users::lang_for(&app.db, admin_id, None).await;
+        let lang = db::users::lang_for_group_notice(&app.db, admin_id, settings.lang).await;
         let text = t!(
             lang,
             "dm_notify",
@@ -371,7 +371,7 @@ async fn notify_offender(
         return;
     }
 
-    let lang = db::users::lang_for(&app.db, ctx.user_id, None).await;
+    let lang = db::users::lang_for_group_notice(&app.db, ctx.user_id, settings.lang).await;
     let text = t!(
         lang,
         "banned_notice",

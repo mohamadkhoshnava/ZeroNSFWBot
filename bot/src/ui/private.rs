@@ -47,10 +47,7 @@ pub async fn start(app: &Arc<App>, lang: Lang) -> Screen {
         // to hand the user off to Telegram's own chat picker.
         vec![InlineKeyboardButton::url(
             t!(lang, "btn_add_group"),
-            app.cfg
-                .add_to_group_url()
-                .parse()
-                .expect("add-to-group deep link is a valid URL"),
+            add_to_group_url(app),
         )],
         vec![
             button(t!(lang, "btn_test"), CallbackAction::Pm(PmView::Test)),
@@ -65,18 +62,31 @@ pub async fn start(app: &Arc<App>, lang: Lang) -> Screen {
     Screen { text, keyboard }
 }
 
-/// Link to the public repository.
+/// Parse a URL, falling back to `t.me` rather than panicking.
 ///
-/// `PROJECT_URL` comes from the environment, so a malformed override must not
-/// take the whole `/start` screen down — fall back to the compiled-in default.
-fn source_button(app: &Arc<App>, lang: Lang) -> InlineKeyboardButton {
-    let url = app
-        .cfg
-        .project_url
-        .parse()
-        .unwrap_or_else(|_| "https://github.com".parse().expect("literal URL is valid"));
+/// Both URLs here are built from environment variables, so a typo in
+/// `BOT_USERNAME` or `PROJECT_URL` used to panic inside `/start` — taking down
+/// the one screen every new user sees, on every press, until someone noticed.
+fn url_or_fallback(raw: &str) -> reqwest::Url {
+    raw.parse().unwrap_or_else(|_| {
+        tracing::warn!(
+            url = raw,
+            "configured URL is not valid; using a placeholder"
+        );
+        "https://t.me".parse().expect("literal URL is valid")
+    })
+}
 
-    InlineKeyboardButton::url(t!(lang, "btn_source"), url)
+fn add_to_group_url(app: &Arc<App>) -> reqwest::Url {
+    url_or_fallback(&app.cfg.add_to_group_url())
+}
+
+/// Link to the public repository.
+fn source_button(app: &Arc<App>, lang: Lang) -> InlineKeyboardButton {
+    InlineKeyboardButton::url(
+        t!(lang, "btn_source"),
+        url_or_fallback(&app.cfg.project_url),
+    )
 }
 
 fn help(app: &Arc<App>, lang: Lang) -> Screen {

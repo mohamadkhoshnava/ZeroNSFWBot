@@ -482,11 +482,6 @@ async fn appeal(
         return Ok(());
     }
 
-    bot.answer_callback_query(query.id.clone())
-        .text(t!(lang, "appeal_sent"))
-        .show_alert(true)
-        .await?;
-
     // Route it to the admins who already asked to hear about this group.
     let settings = db::groups::get(&app.db, chat_id).await?;
     let group_lang = settings.as_ref().map_or(Lang::En, |s| s.lang);
@@ -523,12 +518,33 @@ async fn appeal(
         chat = escape_html(&title),
     );
 
+    let mut delivered = 0_usize;
     for admin_id in db::groups::notify_targets(&app.db, chat_id).await? {
-        let _ = bot
+        if bot
             .send_message(ChatId(admin_id), notice.clone())
             .reply_markup(keyboard.clone())
-            .await;
+            .await
+            .is_ok()
+        {
+            delivered += 1;
+        }
     }
+
+    // Only claim it was sent if it actually reached somebody. `notify_targets`
+    // is empty whenever no admin has enabled DM alerts, and telling the user
+    // "sent to the admins" in that case is simply false — their appeal would
+    // sit unread forever while they waited.
+    bot.answer_callback_query(query.id.clone())
+        .text(t!(
+            lang,
+            if delivered > 0 {
+                "appeal_sent"
+            } else {
+                "appeal_undeliverable"
+            }
+        ))
+        .show_alert(true)
+        .await?;
 
     Ok(())
 }

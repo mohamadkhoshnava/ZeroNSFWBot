@@ -90,13 +90,36 @@ pub async fn get(pool: &PgPool, user_id: i64) -> Result<Option<UserRow>> {
 /// The language to address this user in: their explicit choice if they made
 /// one, otherwise what Telegram reports for their client.
 pub async fn lang_for(pool: &PgPool, user_id: i64, telegram_code: Option<&str>) -> Lang {
-    if let Ok(Some(row)) = get(pool, user_id).await
+    let row = get(pool, user_id).await.ok().flatten();
+
+    if let Some(row) = &row
         && row.lang_locked
     {
         return row.lang();
     }
 
-    telegram_code.map_or(Lang::En, Lang::from_telegram_code)
+    // Prefer what the client reports right now, then what was stored the last
+    // time we saw them. Falling straight through to English here is what made
+    // every DM notification English for a Persian admin: those call sites have
+    // no live `language_code` to pass, only the stored one.
+    telegram_code
+        .map(Lang::from_telegram_code)
+        .or_else(|| row.map(|r| r.lang()))
+        .unwrap_or_default()
+}
+
+/// Language for a message the bot sends about a group, to a specific person.
+///
+/// Falls back to the group's own language rather than English: an admin who
+/// never picked a language is far more likely to read the language their group
+/// is configured in than English.
+pub async fn lang_for_group_notice(pool: &PgPool, user_id: i64, group_lang: Lang) -> Lang {
+    get(pool, user_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|row| row.lang())
+        .unwrap_or(group_lang)
 }
 
 pub async fn set_lang(pool: &PgPool, user_id: i64, lang: Lang) -> Result<()> {

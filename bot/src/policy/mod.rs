@@ -246,14 +246,17 @@ pub fn evaluate(
             // `no_photo_link` is excluded: it requires a bio link, so counting
             // it alongside `bio_link` would reach two from a single fact.
             Policy::Strict => {
+                // Three genuinely independent categories. `bio_link` and
+                // `profile_ocr` share a bucket because they are the same fact —
+                // "this account publishes a way to reach it" — just written in
+                // different places. Counting them separately reached two from
+                // one fact and would ban, say, a business whose logo carries
+                // the same website that is in its bio.
                 let image = u8::from(nsfw_image(report));
-                let text = u8::from(
-                    report.triggered(F_BIO_LINK)
-                        || report.triggered(F_BIO_KEYWORDS)
-                        || report.triggered(F_NAME_PATTERN),
-                );
-                let avatar_text = u8::from(report.triggered(F_PROFILE_OCR));
-                image + text + avatar_text >= 2
+                let contact = u8::from(advertises_contact(report));
+                let vocabulary =
+                    u8::from(report.triggered(F_BIO_KEYWORDS) || report.triggered(F_NAME_PATTERN));
+                image + contact + vocabulary >= 2
             }
             // An empty custom list would otherwise match everything, so it is
             // treated as "never match" — the UI warns about this too.
@@ -264,11 +267,21 @@ pub fn evaluate(
         return Verdict::clean();
     }
 
+    // Report only the signals this policy actually consulted. Every filter
+    // runs, so without this a `nsfw_and_contact` group would see reasons it
+    // does not act on listed as the grounds for a ban — which is exactly the
+    // information an admin uses to judge whether the bot was right.
+    let consulted = policy.relevant_filters(custom);
+
     Verdict {
         matched: true,
         action: if dry_run { Action::Report } else { action },
         score: report.headline_score(),
-        reasons: report.triggered_ids(),
+        reasons: report
+            .triggered_ids()
+            .into_iter()
+            .filter(|id| consulted.contains(id))
+            .collect(),
     }
 }
 
@@ -372,6 +385,32 @@ mod tests {
     fn keywords_alone_suffice_only_under_that_policy() {
         assert!(matched(&[F_BIO_KEYWORDS], Policy::NsfwOrKeywords));
         assert!(!matched(&[F_BIO_KEYWORDS], Policy::NsfwAndContact));
+    }
+
+    /// Same defect as the `no_photo_link` false positive, one preset over: a
+    /// bio link and the *same* link read off the avatar are one fact, not two.
+    /// A business whose logo carries its website would otherwise be banned at
+    /// a 0% NSFW score.
+    #[test]
+    fn strict_does_not_count_contact_info_twice() {
+        assert!(!matched(&[F_BIO_LINK, F_PROFILE_OCR], Policy::Strict));
+    }
+
+    #[test]
+    fn the_reasons_list_only_names_signals_the_policy_used() {
+        // `no_photo_link` fires, but nsfw_and_contact does not consult it, so
+        // it must not appear as grounds for the ban.
+        let report = report(&[F_PROFILE_NSFW, F_BIO_LINK, F_NO_PHOTO_LINK]);
+        let verdict = evaluate(&report, Policy::NsfwAndContact, Action::Ban, &[], false);
+
+        assert!(verdict.matched);
+        assert!(verdict.reasons.contains(&F_PROFILE_NSFW));
+        assert!(verdict.reasons.contains(&F_BIO_LINK));
+        assert!(
+            !verdict.reasons.contains(&F_NO_PHOTO_LINK),
+            "reported a signal the policy ignored: {:?}",
+            verdict.reasons
+        );
     }
 
     #[test]
