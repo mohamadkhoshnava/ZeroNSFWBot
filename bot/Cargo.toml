@@ -1,0 +1,44 @@
+[package]
+name = "zeronsfw-bot"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+async-trait = "0.1.91"
+base64 = "0.23.1"
+chrono = "0.4.45"
+dotenvy = "0.15.7"
+futures = "0.3.33"
+moka = { version = "0.12.15", features = ["future"] }
+once_cell = "1.21.4"
+rand = "0.10.2"
+regex = "1.13.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2", "charset"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "json", "migrate", "derive", "macros"] }
+teloxide = { version = "0.17.0", default-features = false, features = ["macros", "ctrlc_handler", "throttle", "rustls"] }
+thiserror = "2.0.19"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "io-util"] }
+toml = "1.1.4"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+url = "2.5.8"
+
+[dev-dependencies]
+tokio-test = "0.4.5"
+wiremock = "0.6.5"
+
+[lib]
+name = "zeronsfw_bot"
+path = "src/lib.rs"
+
+[[bin]]
+name = "zeronsfw-bot"
+path = "src/main.rs"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

@@ -1,0 +1,223 @@
+# English locale. This file is the reference: every other locale must define
+# exactly the same keys (enforced by tests/i18n_completeness.rs).
+# Messages are rendered with Telegram's HTML parse mode.
+
+# ---------------------------------------------------------------- generic --
+btn_back = "⬅️ Back"
+btn_close = "✖️ Close"
+btn_cancel = "Cancel"
+saved = "✅ Saved"
+only_admins = "Only group administrators can use this."
+error_generic = "Something went wrong. Please try again."
+
+# ---------------------------------------------------------------- welcome --
+welcome_title = "🛡 <b>{bot}</b> is now guarding this group"
+welcome_body = """
+I scan the people who comment here and remove accounts that advertise NSFW content through their profile photo, bio, username or the media they post.
+
+• Auto-detect NSFW advertisers
+• Scan profiles and comments
+• Instant auto-ban
+• Less spam, cleaner community
+
+Current threshold: <b>{threshold}%</b> · Language: <b>{lang}</b>
+Admins can tune everything with /nsfw."""
+welcome_admin_hint = "⚠️ I need to be an <b>administrator</b> with <b>Delete messages</b> and <b>Ban users</b> permissions. Until then I can only report, not act."
+welcome_btn_settings = "⚙️ Settings"
+welcome_btn_lang = "🌐 Language"
+
+# ------------------------------------------------------------ permissions --
+missing_admin = "⚠️ I am not an administrator here, so I could not act. Please promote me with <b>Delete messages</b> and <b>Ban users</b>."
+missing_delete_perm = "⚠️ I could not delete the message — I lack the <b>Delete messages</b> permission."
+missing_ban_perm = "⚠️ I could not ban the user — I lack the <b>Ban users</b> permission."
+
+# ------------------------------------------------------------- detections --
+report_banned = "🚫 Comment removed and <b>{user}</b> banned."
+report_deleted_only = "🧹 Comment by <b>{user}</b> removed."
+report_muted = "🔇 <b>{user}</b> muted and their comment removed."
+report_dry_run = "🕶 <b>Test mode</b> — <b>{user}</b> would have been actioned, but nothing was changed."
+report_no_action = "⚠️ Flagged <b>{user}</b>, but I could not act."
+report_score = "NSFW profile probability: <b>{score}%</b>"
+report_reasons = "Signals: {reasons}"
+report_failed = "\n{problem}"
+btn_mark_wrong = "❌ False positive"
+btn_details = "🔎 Details"
+marked_wrong = "Marked as a false positive. The user has been unbanned."
+marked_wrong_failed = "Marked as a false positive, but I could not unban them."
+details_title = "🔎 <b>Detection details</b>"
+details_line = "• <code>{filter}</code> — {value}"
+detection_expired = "This detection is no longer available."
+
+# ---------------------------------------------------------------- reasons --
+reason_profile_nsfw = "NSFW profile photo"
+reason_message_media = "NSFW media in the message"
+reason_bio_link = "link or @username in bio"
+reason_bio_keywords = "adult keywords in profile text"
+reason_name_pattern = "suspicious name or username"
+reason_profile_ocr = "contact info written on the avatar"
+reason_no_photo_link = "no profile photo but a link in bio"
+reason_reputation = "banned in {count} other groups"
+
+# ------------------------------------------------------------------ panel --
+panel_title = "⚙️ <b>{bot}</b> — settings for <b>{chat}</b>"
+panel_state = """
+🎚 Threshold: <b>{threshold}%</b>
+🧩 Filter mode: <b>{policy}</b>
+⚡ Action: <b>{action}</b>
+🕶 Test mode: <b>{dryrun}</b>
+🛡 Grace window: <b>{grace}</b>
+🌐 Language: <b>{lang}</b>"""
+panel_btn_threshold = "🎚 Threshold"
+panel_btn_policy = "🧩 Filter mode"
+panel_btn_action = "⚡ Action"
+panel_btn_lang = "🌐 Language"
+panel_btn_notify = "🔔 My DM alerts"
+panel_btn_stats = "📊 Statistics"
+panel_btn_dryrun = "🕶 Test mode"
+panel_btn_grace = "🛡 Grace window"
+panel_btn_global = "🌍 Shared blocklist"
+panel_btn_autodelete = "🧹 Clean up my messages"
+panel_btn_reset = "♻️ Reset to defaults"
+panel_reset_done = "♻️ Settings restored to defaults."
+
+threshold_title = "🎚 <b>Threshold</b> — currently <b>{value}%</b>\n\nA profile is treated as NSFW when the model's confidence reaches this value. Lower catches more but risks false positives; 30–50% suits most groups."
+policy_title = "🧩 <b>Filter mode</b> — currently <b>{value}</b>\n\nDecides which combination of signals is enough to act on."
+policy_nsfw_only = "NSFW only"
+policy_nsfw_only_desc = "Act whenever the profile or media crosses the threshold."
+policy_nsfw_and_contact = "NSFW + contact info"
+policy_nsfw_and_contact_desc = "Act only when an NSFW profile <i>also</i> advertises a link or @username. Fewest false positives."
+policy_nsfw_or_keywords = "NSFW or keywords"
+policy_nsfw_or_keywords_desc = "Act on an NSFW profile, or on adult keywords in the name or bio."
+policy_strict = "Strict"
+policy_strict_desc = "Act as soon as any two independent signals agree."
+policy_custom = "Custom"
+policy_custom_desc = "Pick the exact filters yourself."
+custom_title = "🧩 <b>Custom filters</b>\n\nTap a filter to require it. Enabled filters must <i>all</i> match before I act."
+custom_none = "No filter selected — nothing will ever match. Pick at least one."
+custom_title_short = "🧩 Edit custom filters"
+
+action_title = "⚡ <b>Action</b> — currently <b>{value}</b>"
+action_ban = "Ban + delete"
+action_delete = "Delete only"
+action_mute = "Mute + delete"
+action_report = "Report only"
+
+lang_title = "🌐 <b>Language</b> — currently <b>{value}</b>"
+lang_changed = "🌐 Language set to <b>{value}</b>."
+
+notify_title = "🔔 <b>Private alerts</b>\n\nWhen enabled, I send you a DM every time I remove a comment in this group."
+notify_on = "Enabled"
+notify_off = "Disabled"
+notify_needs_start = "⚠️ Start me in private first so I am allowed to message you: {link}"
+
+dryrun_title = "🕶 <b>Test mode</b>\n\nI detect and report but never ban, mute or delete. Run this for a week on a new group to calibrate the threshold safely."
+state_on = "On"
+state_off = "Off"
+
+grace_title = "🛡 <b>Grace window</b> — currently <b>{value}</b>\n\nOnly scan members whose message count in this group is below this number. Long-standing members are skipped, which cuts false positives and CPU use."
+grace_off = "scan everyone"
+grace_value = "first {count} messages"
+
+global_title = "🌍 <b>Shared blocklist</b>\n\nWhen enabled, accounts banned for NSFW advertising in at least {count} other groups are flagged here too, and this group's bans contribute back."
+
+autodelete_title = "🧹 <b>Clean up my messages</b>\n\nDelete my own reports from the chat after {ttl} seconds. Off by default so the group can see what I removed."
+
+# ------------------------------------------------------------------ stats --
+stats_title = "📊 <b>Statistics for {chat}</b>"
+stats_row = "<b>{period}</b> — detected {detected} · deleted {deleted} · banned {banned}"
+stats_period_day = "Today"
+stats_period_week = "7 days"
+stats_period_month = "30 days"
+stats_period_all = "All time"
+stats_none = "Nothing detected yet. 🎉"
+
+# --------------------------------------------------------- DM to the admin --
+dm_notify = "🛡 <b>{chat}</b>\n\nI removed a comment by <b>{user}</b>.\nNSFW probability: <b>{score}%</b>\nSignals: {reasons}"
+
+# ----------------------------------------------------------- private chat --
+start_title = "🛡 <b>{bot}</b>"
+start_body = """
+I automatically detect and ban accounts promoting NSFW content through comments, profiles, usernames, bios, avatars or hidden advertising.
+
+<b>What I do</b>
+• Auto-detect NSFW advertisers
+• Scan profiles and comments
+• Instant auto-ban
+• Reduce spam and keep communities clean
+
+Add me to your group, make me an admin, and tune everything with /nsfw."""
+start_global_stats = "So far: <b>{detections}</b> NSFW detections · <b>{bans}</b> accounts banned · <b>{groups}</b> groups protected."
+btn_add_group = "➕ Add me to a group"
+btn_language = "🌐 Language"
+btn_test = "🧪 Test the detector"
+btn_help = "ℹ️ How it works"
+help_body = """
+<b>How detection works</b>
+
+When someone comments in a protected group I look at:
+• their profile photo (current and previous)
+• any text written on that photo
+• their bio, name and @username
+• media inside the comment itself
+• whether they have been banned for the same reason elsewhere
+
+Those signals feed a filter mode chosen by each group's admins, so a group can require an NSFW photo alone, or an NSFW photo <i>plus</i> advertising, before anyone is removed.
+
+<b>Setting it up</b>
+1. Add me to the group
+2. Promote me with <b>Delete messages</b> and <b>Ban users</b>
+3. Send /nsfw and pick your threshold and filter mode
+4. Leave test mode on for a week, then switch it off
+
+<b>Privacy</b>
+I only read what Telegram already shows publicly, and I store scores — never your photos."""
+test_prompt = "🧪 Send me any photo and I will show you the score my model gives it. Nothing is stored."
+test_result = "🧪 NSFW: <b>{nsfw}%</b> · Safe: <b>{sfw}%</b>\n\n{verdict}"
+test_verdict_flagged = "At a {threshold}% threshold this would be <b>flagged</b>."
+test_verdict_clean = "At a {threshold}% threshold this would <b>pass</b>."
+test_rate_limited = "Slow down a little — try again in {seconds}s."
+test_failed = "I could not analyse that image."
+pm_lang_title = "🌐 Choose your language:"
+
+# ----------------------------------------------------------------- appeal --
+btn_appeal = "🙋 Appeal"
+banned_notice = "🚫 You were removed from <b>{chat}</b> because your profile was flagged as NSFW advertising ({score}%).\n\nIf this is wrong, you can appeal and a group admin will review it."
+appeal_sent = "✅ Your appeal was sent to the group admins."
+appeal_already = "You have already appealed. Please wait for an admin."
+appeal_admin_notice = "🙋 <b>{user}</b> is appealing their ban in <b>{chat}</b>."
+btn_appeal_approve = "✅ Unban"
+btn_appeal_reject = "❌ Keep ban"
+appeal_approved = "The user has been unbanned."
+appeal_rejected = "The ban stands."
+
+# ------------------------------------------------------------- superadmin --
+not_authorized = "This command is restricted."
+info_title = "📈 <b>{bot}</b> — global status"
+info_body = """
+<b>Reach</b>
+• Private users: <b>{users}</b> (<b>{active_users}</b> reachable)
+• Groups: <b>{groups}</b> (<b>{active_groups}</b> active)
+• Members covered: <b>{members}</b>
+
+<b>Detections</b>
+• Today: <b>{d_day}</b> · 7d: <b>{d_week}</b> · 30d: <b>{d_month}</b> · total: <b>{d_all}</b>
+
+<b>Bans</b>
+• Today: <b>{b_day}</b> · 7d: <b>{b_week}</b> · 30d: <b>{b_month}</b> · total: <b>{b_all}</b>
+
+<b>Health</b>
+• Detector: {detector}
+• Uptime: {uptime}"""
+info_top_groups = "\n\n<b>Most active groups</b>\n{rows}"
+broadcast_usage = "Reply to the message you want to broadcast, or send:\n<code>/broadcast users|groups|all &lt;text&gt;</code>"
+broadcast_preview = "📣 <b>Broadcast preview</b> — the message above is exactly what recipients get.\nTarget: <b>{target}</b> ({count} chats)"
+broadcast_bad_html = "❌ Telegram rejected that message, so it was not staged:\n<code>{error}</code>\n\nCheck your HTML tags — only &lt;b&gt;, &lt;i&gt;, &lt;u&gt;, &lt;s&gt;, &lt;code&gt;, &lt;pre&gt; and &lt;a href&gt; are allowed."
+broadcast_confirm = "📤 Send it"
+broadcast_started = "📤 Sending to {count} chats…"
+broadcast_progress = "📤 {sent}/{count} sent · {failed} failed"
+broadcast_done = "✅ Broadcast finished — {sent} delivered, {failed} failed."
+broadcast_cancelled = "Broadcast cancelled."
+broadcast_target_users = "private users"
+broadcast_target_groups = "groups"
+broadcast_target_all = "everyone"
+broadcast_busy = "Another broadcast is already running."

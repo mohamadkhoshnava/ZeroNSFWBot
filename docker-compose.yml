@@ -1,0 +1,64 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-zeronsfw}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-zeronsfw}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-zeronsfw} -d ${POSTGRES_DB:-zeronsfw}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [zeronsfw]
+
+  detector:
+    build:
+      context: ./detector
+      args:
+        MODEL_ID: ${DETECTOR_MODEL_ID:-Marqo/nsfw-image-detection-384}
+        ENABLE_OCR: ${ENABLE_OCR:-true}
+    restart: unless-stopped
+    environment:
+      DETECTOR_THREADS: ${DETECTOR_THREADS:-2}
+      ENABLE_OCR: ${ENABLE_OCR:-true}
+      OCR_LANGS: ${OCR_LANGS:-eng+fas+ara+rus}
+      LOG_LEVEL: ${DETECTOR_LOG_LEVEL:-info}
+    ports:
+      # Exposed so scripts/eval_images.sh and manual curl work from the host.
+      - "${DETECTOR_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).status == 200 else 1)"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 40s
+    networks: [zeronsfw]
+
+  bot:
+    build:
+      context: ./bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Force the in-network addresses regardless of what .env says, so the
+      # same .env works for both host-side tooling and compose.
+      DATABASE_URL: postgres://${POSTGRES_USER:-zeronsfw}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-zeronsfw}
+      DETECTOR_URL: http://detector:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      detector:
+        condition: service_healthy
+    networks: [zeronsfw]
+
+volumes:
+  pgdata:
+
+networks:
+  zeronsfw:
+    driver: bridge

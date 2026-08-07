@@ -1,0 +1,51 @@
+# ---- Rust ----
+/bot/target/
+target/
+**/*.rs.bk
+*.pdb
+
+# ---- Environment / secrets ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---- Python (detector) ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Models & weights (downloaded at build time) ----
+/detector/models/
+*.onnx
+*.pt
+*.bin
+*.safetensors
+
+# ---- Docker / runtime data ----
+pgdata/
+/data/
+docker-compose.override.yml
+
+# ---- Test images ----
+# SFW samples are generated & committed; real NSFW test material must never be committed.
+/assets/test_images/nsfw/*
+!/assets/test_images/nsfw/.gitkeep
+/assets/test_images/**/results.json
+
+# ---- Logs ----
+*.log
+logs/
+
+# ---- Editors / OS ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

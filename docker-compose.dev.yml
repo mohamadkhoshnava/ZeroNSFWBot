@@ -1,0 +1,14 @@
+# Development overlay: run only the infrastructure in Docker and the bot
+# natively with `cargo run`, so rebuilds are seconds instead of minutes.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres detector
+#   DATABASE_URL=postgres://zeronsfw:...@localhost:5432/zeronsfw \
+#   DETECTOR_URL=http://localhost:8000 cargo run --manifest-path bot/Cargo.toml
+services:
+  postgres:
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+  bot:
+    # Not started in dev; run it from the host instead.
+    profiles: ["full"]

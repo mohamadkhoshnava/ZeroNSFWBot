@@ -1,0 +1,8 @@
+# Runtime dependencies only — torch/timm live in the build stage.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+onnxruntime==1.20.1
+pillow==11.1.0
+numpy==2.2.1
+pydantic==2.10.5
+pytesseract==0.3.13

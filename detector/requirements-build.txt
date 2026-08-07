@@ -1,0 +1,5 @@
+# Build-stage only: used once by scripts/export_onnx.py, never shipped.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1
+timm==1.0.13
+onnx==1.17.0
