@@ -54,6 +54,14 @@ def main() -> None:
     )
     parser.add_argument("--out-dir", default="/models", type=Path)
     parser.add_argument("--opset", type=int, default=17)
+    parser.add_argument(
+        "--no-dynamo",
+        dest="dynamo",
+        action="store_false",
+        help="Use the legacy TorchScript exporter. An escape hatch for when a "
+        "torch release breaks the dynamo path; the resulting graph is scored "
+        "by the CI smoke test either way.",
+    )
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -89,6 +97,11 @@ def main() -> None:
         dynamic_axes={"pixel_values": {0: "batch"}, "logits": {0: "batch"}},
         opset_version=args.opset,
         do_constant_folding=True,
+        # Stated explicitly rather than left to the default, which flipped from
+        # the TorchScript tracer to dynamo in torch 2.6 and changed what the
+        # export needs installed. Pinning it here means a torch bump can only
+        # fail loudly at build time, never quietly produce a different graph.
+        dynamo=args.dynamo,
     )
 
     metadata = {

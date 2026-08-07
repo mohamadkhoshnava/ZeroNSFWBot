@@ -1,5 +1,13 @@
 # Build-stage only: used once by scripts/export_onnx.py, never shipped.
+#
+# `torch` is deliberately not pinned to a `+cpu` local version, even though
+# Dependabot proposes one. The extra index already serves CPU wheels, and the
+# `+cpu` suffix does not exist for every platform PyTorch publishes there — an
+# explicit pin breaks the arm64 build.
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.5.1
-timm==1.0.13
-onnx==1.17.0
+torch==2.13.0
+timm==1.0.28
+onnx==1.22.0
+# torch >=2.6 defaults `torch.onnx.export` to the dynamo exporter, which imports
+# onnxscript. Without it the export dies with a bare ModuleNotFoundError.
+onnxscript==0.7.1

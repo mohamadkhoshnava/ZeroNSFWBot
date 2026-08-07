@@ -7,7 +7,7 @@ FROM python:3.12-slim AS exporter
 ARG MODEL_ID=Marqo/nsfw-image-detection-384
 # Generous retries: torch is a large download and the model comes from the HF
 # hub, so a flaky link should slow the build down, not break it.
-ENV PIP_NO_CACHE_DIR=1 PIP_RETRIES=10 PIP_TIMEOUT=60 HF_HUB_DISABLE_TELEMETRY=1
+ENV PIP_NO_CACHE_DIR=1 PIP_RETRIES=15 PIP_TIMEOUT=180 HF_HUB_DISABLE_TELEMETRY=1
 
 WORKDIR /build
 COPY requirements-build.txt .

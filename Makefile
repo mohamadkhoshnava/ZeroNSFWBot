@@ -23,9 +23,14 @@ test: ## Run Rust tests
 	cd bot && cargo test
 
 # -------------------------------------------------------------- python ----
+# Match the runtime image. onnxruntime requires >=3.11, so a bare `python3`
+# pointing at an older interpreter fails to resolve the pins at all.
+DETECTOR_PYTHON ?= $(shell command -v python3.12 || command -v python3.11 || command -v python3)
+
 .PHONY: detector-venv detector-test
 detector-venv: ## Create detector/.venv with the test dependencies
-	python3 -m venv detector/.venv
+	$(DETECTOR_PYTHON) -m venv detector/.venv
+	detector/.venv/bin/pip install -q --upgrade pip
 	detector/.venv/bin/pip install -q -r detector/requirements-dev.txt
 
 detector-test: ## Run detector unit tests in the isolated venv
