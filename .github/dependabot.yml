@@ -18,7 +18,17 @@ updates:
     schedule:
       interval: weekly
       day: monday
-    open-pull-requests-limit: 3
+    # Raised from 3: at 3, five outdated packages silently never got a PR,
+    # which is worse than a noisy inbox because it looks like they were current.
+    open-pull-requests-limit: 10
+    ignore:
+      # torch is build-stage only and its version is coupled to how
+      # `torch.onnx.export` behaves — the 2.5 -> 2.13 bump silently switched
+      # exporters and needed a new dependency plus a code change. It also keeps
+      # proposing a `+cpu` local version that does not exist on every platform
+      # PyTorch publishes for, which breaks the arm64 build. Bump it by hand,
+      # with the smoke test watching.
+      - dependency-name: torch
 
   - package-ecosystem: docker
     directories:

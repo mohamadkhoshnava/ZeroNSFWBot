@@ -88,6 +88,25 @@ independent evidence — in three more places.
 - **`audit.yml`** — weekly `cargo audit` and a gitleaks secret scan, plus
   Dependabot for cargo, pip, Docker and Actions.
 
+- **Dependencies brought current** — fastapi, uvicorn, pillow, numpy, pydantic,
+  onnxruntime, timm, onnx and torch, plus four GitHub Actions.
+
+  The torch 2.5 → 2.13 bump was not mechanical. torch ≥2.6 switched the
+  `torch.onnx.export` default from the TorchScript tracer to dynamo, which
+  imports `onnxscript`; the detector image stopped building on a bare
+  `ModuleNotFoundError`. Adds `onnxscript` and states `dynamo=` explicitly, so a
+  future torch release can only fail loudly rather than quietly export a
+  different graph. `--no-dynamo` remains as an escape hatch.
+
+  Verified equivalent rather than merely green: the dynamo-exported model scores
+  the committed samples identically to the old one, to a tenth of a percent
+  (33.4 / 16.8 / 16.2 / 8.3 / 6.1).
+
+  Dependabot no longer proposes torch — it is build-stage only, its version is
+  coupled to the export path, and it kept suggesting a `+cpu` local version that
+  does not exist for every platform PyTorch publishes to, which breaks the arm64
+  build.
+
 ### Changed
 
 - `/info` counts private-chat users (`started_bot`) rather than every account
