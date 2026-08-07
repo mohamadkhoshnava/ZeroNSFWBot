@@ -5,7 +5,7 @@
 # `+cpu` suffix does not exist for every platform PyTorch publishes there — an
 # explicit pin breaks the arm64 build.
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.13.0
+torch==2.13.0+cpu
 timm==1.0.28
 onnx==1.22.0
 # torch >=2.6 defaults `torch.onnx.export` to the dynamo exporter, which imports
