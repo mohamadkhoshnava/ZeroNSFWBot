@@ -17,7 +17,7 @@ fn button(label: String, action: CallbackAction) -> InlineKeyboardButton {
 pub async fn render(app: &Arc<App>, view: PmView, lang: Lang) -> Screen {
     match view {
         PmView::Start => start(app, lang).await,
-        PmView::Help => help(lang),
+        PmView::Help => help(app, lang),
         PmView::Test => test(lang),
         PmView::Lang => language(lang),
     }
@@ -29,7 +29,7 @@ pub async fn start(app: &Arc<App>, lang: Lang) -> Screen {
     let (detections, bans, groups) = db::stats::public_totals(&app.db).await.unwrap_or_default();
 
     let text = format!(
-        "{}\n{}\n\n{}",
+        "{}\n{}\n\n{}\n\n{}",
         t!(lang, "start_title", bot = escape_html(&app.cfg.bot_name)),
         t!(lang, "start_body"),
         t!(
@@ -39,6 +39,7 @@ pub async fn start(app: &Arc<App>, lang: Lang) -> Screen {
             bans = bans,
             groups = groups
         ),
+        t!(lang, "open_source", url = escape_html(&app.cfg.project_url)),
     );
 
     let keyboard = InlineKeyboardMarkup::new(vec![
@@ -55,22 +56,40 @@ pub async fn start(app: &Arc<App>, lang: Lang) -> Screen {
             button(t!(lang, "btn_test"), CallbackAction::Pm(PmView::Test)),
             button(t!(lang, "btn_help"), CallbackAction::Pm(PmView::Help)),
         ],
-        vec![button(
-            t!(lang, "btn_language"),
-            CallbackAction::Pm(PmView::Lang),
-        )],
+        vec![
+            button(t!(lang, "btn_language"), CallbackAction::Pm(PmView::Lang)),
+            source_button(app, lang),
+        ],
     ]);
 
     Screen { text, keyboard }
 }
 
-fn help(lang: Lang) -> Screen {
+/// Link to the public repository.
+///
+/// `PROJECT_URL` comes from the environment, so a malformed override must not
+/// take the whole `/start` screen down — fall back to the compiled-in default.
+fn source_button(app: &Arc<App>, lang: Lang) -> InlineKeyboardButton {
+    let url = app
+        .cfg
+        .project_url
+        .parse()
+        .unwrap_or_else(|_| "https://github.com".parse().expect("literal URL is valid"));
+
+    InlineKeyboardButton::url(t!(lang, "btn_source"), url)
+}
+
+fn help(app: &Arc<App>, lang: Lang) -> Screen {
     Screen {
-        text: t!(lang, "help_body"),
-        keyboard: InlineKeyboardMarkup::new(vec![vec![button(
-            t!(lang, "btn_back"),
-            CallbackAction::Pm(PmView::Start),
-        )]]),
+        text: format!(
+            "{}\n\n{}",
+            t!(lang, "help_body"),
+            t!(lang, "open_source", url = escape_html(&app.cfg.project_url)),
+        ),
+        keyboard: InlineKeyboardMarkup::new(vec![vec![
+            button(t!(lang, "btn_back"), CallbackAction::Pm(PmView::Start)),
+            source_button(app, lang),
+        ]]),
     }
 }
 

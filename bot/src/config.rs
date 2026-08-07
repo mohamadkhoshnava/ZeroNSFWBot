@@ -7,12 +7,18 @@ use anyhow::{Context, Result, bail};
 use crate::i18n::Lang;
 use crate::policy::{Action, Policy};
 
+/// Where the source lives, unless `PROJECT_URL` says otherwise.
+const DEFAULT_PROJECT_URL: &str = "https://github.com/mohamadkhoshnava/ZeroNSFWBot";
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bot_token: String,
     pub bot_username: String,
     pub bot_name: String,
     pub super_admins: HashSet<i64>,
+    /// Public source repository, linked from the private chat. Overridable so
+    /// a fork points at its own repo rather than upstream.
+    pub project_url: String,
 
     pub database_url: String,
     pub database_max_connections: u32,
@@ -83,6 +89,7 @@ impl Config {
             bot_name: opt("BOT_NAME").unwrap_or_else(|| "NSFW Guard".to_owned()),
             bot_token,
             super_admins,
+            project_url: opt("PROJECT_URL").unwrap_or_else(|| DEFAULT_PROJECT_URL.to_owned()),
 
             database_url: req("DATABASE_URL")?,
             database_max_connections: num("DATABASE_MAX_CONNECTIONS", 10)?,

@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-
 # ---------------------------------------------------------------------------
 # Stage 1 — dependency cache.
 # cargo-chef turns the manifests into a "recipe" so the ~200 crates this

@@ -151,6 +151,8 @@ btn_add_group = "➕ Add me to a group"
 btn_language = "🌐 Language"
 btn_test = "🧪 Test the detector"
 btn_help = "ℹ️ How it works"
+btn_source = "⭐ Source code"
+open_source = "<b>Open source.</b> The full code is public — improve it, or ask for features and report false positives in the issue tracker: {url}"
 help_body = """
 <b>How detection works</b>
 

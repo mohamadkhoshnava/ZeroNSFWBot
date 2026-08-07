@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-
 # ---------------------------------------------------------------------------
 # Stage 1 — export the model to ONNX.
 # torch + timm are ~1 GB; none of it reaches the final image.
