@@ -53,6 +53,6 @@ jobs:
       # This repository handles a live bot token and a database password. Both
       # live only in .env, which is gitignored — this is the check that keeps it
       # that way after a careless `git add -A`.
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
