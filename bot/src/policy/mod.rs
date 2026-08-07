@@ -9,8 +9,8 @@ use std::{fmt, str::FromStr};
 use serde::{Deserialize, Serialize};
 
 use crate::filters::{
-    F_BIO_KEYWORDS, F_BIO_LINK, F_MESSAGE_MEDIA, F_NAME_PATTERN, F_NO_PHOTO_LINK, F_PROFILE_NSFW,
-    F_PROFILE_OCR, F_REPUTATION, ScanReport,
+    F_BIO_KEYWORDS, F_BIO_LINK, F_MESSAGE_MEDIA, F_NAME_PATTERN, F_PROFILE_NSFW, F_PROFILE_OCR,
+    F_REPUTATION, ScanReport,
 };
 
 /// What the bot does to a matched account.
@@ -138,13 +138,7 @@ impl Policy {
         ids.extend(match self {
             Policy::NsfwOnly => vec![F_PROFILE_NSFW, F_MESSAGE_MEDIA],
             Policy::NsfwAndContact => {
-                vec![
-                    F_PROFILE_NSFW,
-                    F_MESSAGE_MEDIA,
-                    F_BIO_LINK,
-                    F_PROFILE_OCR,
-                    F_NO_PHOTO_LINK,
-                ]
+                vec![F_PROFILE_NSFW, F_MESSAGE_MEDIA, F_BIO_LINK, F_PROFILE_OCR]
             }
             Policy::NsfwOrKeywords => {
                 vec![
@@ -161,7 +155,6 @@ impl Policy {
                 F_BIO_KEYWORDS,
                 F_NAME_PATTERN,
                 F_PROFILE_OCR,
-                F_NO_PHOTO_LINK,
             ],
             Policy::Custom => return custom.iter().map(String::as_str).chain(ids).collect(),
         });
@@ -238,12 +231,10 @@ pub fn evaluate(
     let matched = report.triggered(F_REPUTATION)
         || match policy {
             Policy::NsfwOnly => nsfw_image(report),
-            Policy::NsfwAndContact => {
-                // `no_photo_link` is the escape hatch for hidden avatars, where
-                // there is no image to score at all.
-                (nsfw_image(report) && advertises_contact(report))
-                    || report.triggered(F_NO_PHOTO_LINK)
-            }
+            // A policy named "NSFW + contact" must never fire without an NSFW
+            // signal. It used to also accept `no_photo_link` on its own, which
+            // banned a real user at a reported 0% NSFW score.
+            Policy::NsfwAndContact => nsfw_image(report) && advertises_contact(report),
             Policy::NsfwOrKeywords => {
                 nsfw_image(report)
                     || report.triggered(F_BIO_KEYWORDS)
@@ -251,6 +242,9 @@ pub fn evaluate(
             }
             // Two independent signals. Profile-NSFW and message-NSFW are not
             // independent enough on their own, so image signals count once.
+            //
+            // `no_photo_link` is excluded: it requires a bio link, so counting
+            // it alongside `bio_link` would reach two from a single fact.
             Policy::Strict => {
                 let image = u8::from(nsfw_image(report));
                 let text = u8::from(
@@ -259,8 +253,7 @@ pub fn evaluate(
                         || report.triggered(F_NAME_PATTERN),
                 );
                 let avatar_text = u8::from(report.triggered(F_PROFILE_OCR));
-                let hidden = u8::from(report.triggered(F_NO_PHOTO_LINK));
-                image + text + avatar_text + hidden >= 2
+                image + text + avatar_text >= 2
             }
             // An empty custom list would otherwise match everything, so it is
             // treated as "never match" — the UI warns about this too.
@@ -282,7 +275,9 @@ pub fn evaluate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::filters::FilterOutcome;
+    // Still exercised here even though no preset consults it any more — these
+    // tests exist precisely to keep it out of the presets.
+    use crate::filters::{F_NO_PHOTO_LINK, FilterOutcome};
 
     /// Build a report where the listed filters fired.
     fn report(triggered: &[&'static str]) -> ScanReport {
@@ -319,10 +314,58 @@ mod tests {
         ));
     }
 
+    /// Regression: this exact combination banned a real group member whose
+    /// report read "NSFW probability: 0%". No preset may convict on a hidden
+    /// avatar plus a bio link — that is not evidence of NSFW content.
     #[test]
-    fn hidden_avatar_with_a_link_still_matches_nsfw_and_contact() {
-        // There is no image to score, so this is the only path that can fire.
-        assert!(matched(&[F_NO_PHOTO_LINK], Policy::NsfwAndContact));
+    fn a_hidden_avatar_with_a_link_never_matches_a_preset() {
+        for policy in [
+            Policy::NsfwOnly,
+            Policy::NsfwAndContact,
+            Policy::NsfwOrKeywords,
+            Policy::Strict,
+        ] {
+            assert!(
+                !matched(&[F_NO_PHOTO_LINK, F_BIO_LINK], policy),
+                "{policy} convicted with no NSFW signal at all"
+            );
+        }
+    }
+
+    #[test]
+    fn no_preset_ever_fires_without_an_image_or_keyword_signal() {
+        // Every weak, purely-structural signal at once still is not enough.
+        let weak = &[F_BIO_LINK, F_NO_PHOTO_LINK];
+        for policy in [Policy::NsfwOnly, Policy::NsfwAndContact, Policy::Strict] {
+            assert!(!matched(weak, policy), "{policy} is too eager");
+        }
+    }
+
+    #[test]
+    fn no_photo_link_is_still_usable_in_a_custom_policy() {
+        // It remains a real signal when an admin deliberately pairs it.
+        let custom = vec![F_NO_PHOTO_LINK.to_owned(), F_BIO_KEYWORDS.to_owned()];
+
+        assert!(
+            !evaluate(
+                &report(&[F_NO_PHOTO_LINK]),
+                Policy::Custom,
+                Action::Ban,
+                &custom,
+                false
+            )
+            .matched
+        );
+        assert!(
+            evaluate(
+                &report(&[F_NO_PHOTO_LINK, F_BIO_KEYWORDS]),
+                Policy::Custom,
+                Action::Ban,
+                &custom,
+                false
+            )
+            .matched
+        );
     }
 
     #[test]

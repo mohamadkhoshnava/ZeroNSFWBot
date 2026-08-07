@@ -31,8 +31,8 @@ pub struct ScanContext {
     /// `None` means the bio could not be read (privacy settings, or Telegram
     /// declined). Filters must treat that as unknown, never as empty.
     pub bio: Option<String>,
-    /// Whether the account has any visible profile photo at all.
-    pub has_photo: bool,
+    /// Whether the account has a profile photo the bot can see.
+    pub photos: PhotoAccess,
     /// Highest NSFW probability across the scanned profile photos.
     pub profile_nsfw: Option<f32>,
     /// Text read off the avatar, when OCR is enabled and found something.
@@ -46,10 +46,33 @@ pub struct ScanContext {
     pub reputation_min_bans: i64,
 }
 
+/// What the bot managed to learn about an account's profile photos.
+///
+/// This is deliberately three-valued rather than a `bool`. "I looked and there
+/// is no photo" and "I did not look, or the lookup failed" are completely
+/// different facts, and collapsing them means every transient
+/// `getUserProfilePhotos` failure is indistinguishable from a genuinely
+/// avatar-less account — which is exactly how an innocent user gets banned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhotoAccess {
+    /// Telegram returned at least one photo.
+    Visible,
+    /// Telegram positively reported zero photos: no avatar, or one hidden by
+    /// the user's privacy settings.
+    Absent,
+    /// Not looked up, or the lookup failed. Never a signal on its own.
+    Unknown,
+}
+
 impl ScanContext {
     /// The group's threshold as a `0.0..=1.0` probability.
     pub fn threshold(&self) -> f32 {
         self.settings.threshold_ratio()
+    }
+
+    /// `true` only when the bot positively established there is no photo.
+    pub fn photo_is_absent(&self) -> bool {
+        self.photos == PhotoAccess::Absent
     }
 }
 
@@ -84,14 +107,14 @@ pub async fn collect(
         collect_reputation(app, user_id, chat_id, needs),
     );
 
-    let (has_photo, profile_nsfw, avatar_text) = profile;
+    let (photos, profile_nsfw, avatar_text) = profile;
 
     ScanContext {
         user_id,
         display_name: display_name(user),
         username: user.username.clone(),
         bio,
-        has_photo,
+        photos,
         profile_nsfw,
         avatar_text,
         message_nsfw,
@@ -101,28 +124,32 @@ pub async fn collect(
     }
 }
 
-/// Returns `(has_photo, nsfw_score, avatar_text)`.
+/// Returns `(photo access, nsfw_score, avatar_text)`.
 async fn collect_profile(
     app: &Arc<App>,
     bot: &Tg,
     user_id: i64,
     needs: Needs,
-) -> (bool, Option<f32>, Option<String>) {
+) -> (PhotoAccess, Option<f32>, Option<String>) {
     if !needs.profile_photos {
-        return (false, None, None);
+        // Nobody asked, so nothing is known — not "there is no photo".
+        return (PhotoAccess::Unknown, None, None);
     }
 
-    let Some(photos) = fetch_profile_photos(app, bot, user_id).await else {
-        // No photos at all: `has_photo = false` is itself a signal that
-        // `no_photo_link` consumes, so this is a real answer, not a failure.
-        return (false, None, None);
+    let photos = match fetch_profile_photos(app, bot, user_id).await {
+        FetchedPhotos::Some(photos) => photos,
+        // Telegram answered and the list was empty. A real, usable fact.
+        FetchedPhotos::Empty => return (PhotoAccess::Absent, None, None),
+        // The call failed. Reporting this as "no photo" is what turns a
+        // network hiccup into a ban, so it stays Unknown.
+        FetchedPhotos::Failed => return (PhotoAccess::Unknown, None, None),
     };
 
     // A cache hit means the fingerprint matched, so these exact photos have
     // already been scored and nothing needs downloading.
     if let Ok(Some(cached)) = db::scan_cache::get(&app.db, user_id, &photos.fingerprint).await {
         return (
-            cached.has_photo,
+            PhotoAccess::Visible,
             Some(cached.nsfw_score),
             cached.ocr_text.filter(|t| !t.is_empty()),
         );
@@ -139,7 +166,8 @@ async fn collect_profile(
     }
 
     if images.is_empty() {
-        return (true, None, None);
+        // The photos exist, we just could not download them.
+        return (PhotoAccess::Visible, None, None);
     }
 
     let (scores, ocr) = tokio::join!(app.detector.classify(&images), async {
@@ -180,18 +208,31 @@ async fn collect_profile(
         }
     }
 
-    (true, nsfw, avatar_text)
+    (PhotoAccess::Visible, nsfw, avatar_text)
 }
 
-async fn fetch_profile_photos(app: &Arc<App>, bot: &Tg, user_id: i64) -> Option<ProfilePhotos> {
+/// The three outcomes of asking Telegram for a user's profile photos, kept
+/// apart so a failure can never be mistaken for an empty result.
+enum FetchedPhotos {
+    Some(ProfilePhotos),
+    Empty,
+    Failed,
+}
+
+async fn fetch_profile_photos(app: &Arc<App>, bot: &Tg, user_id: i64) -> FetchedPhotos {
     let limit = app.cfg.defaults.profile_photos_to_scan;
 
-    let photos = bot
+    let photos = match bot
         .get_user_profile_photos(UserId(user_id as u64))
         .limit(limit as u8)
         .await
-        .inspect_err(|err| tracing::debug!(user_id, %err, "getUserProfilePhotos failed"))
-        .ok()?;
+    {
+        Ok(photos) => photos,
+        Err(err) => {
+            tracing::debug!(user_id, %err, "getUserProfilePhotos failed");
+            return FetchedPhotos::Failed;
+        }
+    };
 
     // Telegram returns the currently displayed photo (the pinned one, if the
     // user pinned any) at index 0 and older ones after it, so taking the first
@@ -204,10 +245,10 @@ async fn fetch_profile_photos(app: &Arc<App>, bot: &Tg, user_id: i64) -> Option<
         .collect();
 
     if largest.is_empty() {
-        return None;
+        return FetchedPhotos::Empty;
     }
 
-    Some(ProfilePhotos {
+    FetchedPhotos::Some(ProfilePhotos {
         fingerprint: largest
             .iter()
             .map(|p| p.file.unique_id.0.as_str())

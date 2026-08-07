@@ -8,6 +8,9 @@ btn_close = "✖️ Close"
 btn_cancel = "Cancel"
 saved = "✅ Saved"
 only_admins = "Only group administrators can use this."
+unban_usage = "Reply to a message from the user with /unban, or send <code>/unban &lt;user_id&gt;</code>.\nThe id is in the ban report's 🔎 Details."
+unban_done = "✅ <b>{user}</b> is no longer banned and can rejoin."
+unban_failed = "❌ Could not unban: {error}"
 error_generic = "Something went wrong. Please try again."
 
 # ---------------------------------------------------------------- welcome --

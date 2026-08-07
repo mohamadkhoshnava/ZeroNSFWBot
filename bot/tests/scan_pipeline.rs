@@ -11,7 +11,7 @@ use zeronsfw_bot::{
     filters::{FilterRegistry, ScanReport},
     i18n::Lang,
     policy::{self, Action, Policy, Verdict},
-    scan::ScanContext,
+    scan::{PhotoAccess, ScanContext},
 };
 
 fn defaults() -> GroupDefaults {
@@ -35,7 +35,7 @@ fn clean_context() -> ScanContext {
         display_name: "Maryam".into(),
         username: Some("maryam".into()),
         bio: Some("Photographer in Tehran".into()),
-        has_photo: true,
+        photos: PhotoAccess::Visible,
         profile_nsfw: Some(0.02),
         avatar_text: None,
         message_nsfw: None,
@@ -114,18 +114,44 @@ async fn contact_info_hidden_on_the_avatar_still_counts_as_advertising() {
     assert!(verdict.matched);
 }
 
+/// Regression for the false positive that banned a real group member at a
+/// reported 0% NSFW score. Plenty of ordinary users hide their avatar and keep
+/// a link in their bio; that combination is not evidence of anything.
 #[tokio::test]
-async fn a_hidden_avatar_with_a_link_is_caught_by_the_fallback() {
-    // Privacy settings hide the photo, so there is nothing to classify.
+async fn a_hidden_avatar_with_a_link_is_not_a_ban() {
     let mut ctx = clean_context();
-    ctx.has_photo = false;
+    ctx.photos = PhotoAccess::Absent;
     ctx.profile_nsfw = None;
-    ctx.bio = Some("t.me/joinchat/xyz".into());
+    ctx.bio = Some("t.me/my_blog".into());
 
     let (report, verdict) = run(&ctx).await;
 
+    // The signal is still reported — an admin can opt into it via a custom
+    // policy — but no preset acts on it.
     assert!(report.triggered("no_photo_link"));
-    assert!(verdict.matched, "hiding the avatar must not be a free pass");
+    assert!(
+        !verdict.matched,
+        "banned a user with no NSFW evidence at all"
+    );
+}
+
+/// The bug underneath that false positive: a failed or skipped
+/// getUserProfilePhotos call reported "this user has no photo", so any
+/// transient API error looked like a real signal.
+#[tokio::test]
+async fn a_failed_photo_lookup_is_unknown_not_absent() {
+    let mut ctx = clean_context();
+    ctx.photos = PhotoAccess::Unknown;
+    ctx.profile_nsfw = None;
+    ctx.bio = Some("t.me/my_blog".into());
+
+    let (report, verdict) = run(&ctx).await;
+
+    assert!(
+        !report.triggered("no_photo_link"),
+        "an unknown photo state must never fire the no-photo filter"
+    );
+    assert!(!verdict.matched);
 }
 
 #[tokio::test]

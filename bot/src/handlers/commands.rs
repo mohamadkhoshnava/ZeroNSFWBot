@@ -10,7 +10,7 @@ use std::sync::Arc;
 use teloxide::{
     payloads::SendMessageSetters,
     prelude::*,
-    types::{ChatId, InlineKeyboardButton, InlineKeyboardMarkup, Me, Message},
+    types::{ChatId, InlineKeyboardButton, InlineKeyboardMarkup, Me, Message, UserId},
     utils::command::BotCommands,
 };
 
@@ -36,6 +36,9 @@ pub enum Command {
     Help,
     /// Open the moderation settings for this group.
     Nsfw,
+    /// Lift a ban. Reply to the user, or pass their numeric id.
+    #[command(parse_with = "default")]
+    Unban(String),
     /// Bot-wide status. Super-admins only.
     Info,
     /// Announce something to every user or group. Super-admins only.
@@ -55,6 +58,7 @@ pub async fn handle(
         Command::Start => start(&bot, &msg, &app).await,
         Command::Help => help(&bot, &msg, &app).await,
         Command::Nsfw => nsfw(&bot, &msg, &app).await,
+        Command::Unban(args) => unban(&bot, &msg, &app, &args).await,
         Command::Info => info(&bot, &msg, &app).await,
         Command::Broadcast(args) => broadcast_cmd(&bot, &msg, &app, &args).await,
     }
@@ -170,6 +174,97 @@ async fn nsfw(bot: &Tg, msg: &Message, app: &Arc<App>) -> anyhow::Result<()> {
         .reply_markup(screen.keyboard)
         .await?;
     Ok(())
+}
+
+/// `/unban` — lift a ban, by reply or by numeric id.
+///
+/// Telegram's own "Removed users" list does the same job, but it is several
+/// taps deep and easy to miss; an admin who has just seen a wrong ban wants to
+/// undo it from the same screen.
+async fn unban(bot: &Tg, msg: &Message, app: &Arc<App>, args: &str) -> anyhow::Result<()> {
+    if msg.chat.is_private() {
+        return Ok(());
+    }
+
+    let Some(sender) = msg.from.as_ref() else {
+        return Ok(());
+    };
+    let admin_id = sender.id.0 as i64;
+
+    let settings = db::groups::get(&app.db, msg.chat.id.0).await?;
+    let lang = settings.as_ref().map_or(app.cfg.defaults.lang, |s| s.lang);
+
+    let admins = app.admins.get(bot, msg.chat.id, app.bot_id).await;
+    if !admins.is_admin(admin_id) && !app.cfg.is_super_admin(admin_id) {
+        if admins.bot_can_delete {
+            let _ = bot.delete_message(msg.chat.id, msg.id).await;
+        }
+        return Ok(());
+    }
+
+    // A banned user's messages are usually gone, so the numeric id is the
+    // reliable path; the reply form still helps when deletion failed.
+    let target = msg
+        .reply_to_message()
+        .and_then(|reply| reply.from.as_ref())
+        .map(|user| (user.id.0 as i64, display_name(user)))
+        .or_else(|| {
+            args.trim()
+                .trim_start_matches('#')
+                .parse::<i64>()
+                .ok()
+                .map(|id| (id, id.to_string()))
+        });
+
+    let Some((user_id, name)) = target else {
+        bot.send_message(msg.chat.id, t!(lang, "unban_usage"))
+            .await?;
+        return Ok(());
+    };
+
+    match bot
+        .unban_chat_member(msg.chat.id, UserId(user_id as u64))
+        // Without this, unbanning also *removes* a user who is still a member.
+        .only_if_banned(true)
+        .await
+    {
+        Ok(_) => {
+            db::bans::record_unban(&app.db, msg.chat.id.0, user_id, admin_id).await?;
+            db::audit::log(
+                &app.db,
+                Some(msg.chat.id.0),
+                Some(admin_id),
+                "manual_unban",
+                serde_json::json!({ "user_id": user_id }),
+            )
+            .await;
+            bot.send_message(
+                msg.chat.id,
+                t!(lang, "unban_done", user = escape_html(&truncate(&name, 48))),
+            )
+            .await?;
+        }
+        Err(err) => {
+            bot.send_message(
+                msg.chat.id,
+                t!(
+                    lang,
+                    "unban_failed",
+                    error = escape_html(&truncate(&err.to_string(), 120))
+                ),
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
+}
+
+fn display_name(user: &teloxide::types::User) -> String {
+    match &user.last_name {
+        Some(last) => format!("{} {last}", user.first_name),
+        None => user.first_name.clone(),
+    }
 }
 
 async fn info(bot: &Tg, msg: &Message, app: &Arc<App>) -> anyhow::Result<()> {
