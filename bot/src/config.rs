@@ -10,6 +10,9 @@ use crate::policy::{Action, Policy};
 /// Where the source lives, unless `PROJECT_URL` says otherwise.
 const DEFAULT_PROJECT_URL: &str = "https://github.com/mohamadkhoshnava/ZeroNSFWBot";
 
+/// The maintainer's public channel, credited in the bot's own messages.
+const DEFAULT_DEVELOPER_CHANNEL: &str = "@SEYED_BAX";
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bot_token: String,
@@ -19,6 +22,9 @@ pub struct Config {
     /// Public source repository, linked from the private chat. Overridable so
     /// a fork points at its own repo rather than upstream.
     pub project_url: String,
+    /// Maintainer's channel, credited at the foot of the bot's own messages.
+    /// Set it empty to drop the credit line entirely.
+    pub developer_channel: String,
 
     pub database_url: String,
     pub database_max_connections: u32,
@@ -90,6 +96,13 @@ impl Config {
             bot_token,
             super_admins,
             project_url: opt("PROJECT_URL").unwrap_or_else(|| DEFAULT_PROJECT_URL.to_owned()),
+            // `opt` treats blank as unset, so an operator who wants no credit
+            // line must remove the variable rather than empty it. Honour the
+            // explicit empty value here instead.
+            developer_channel: std::env::var("DEVELOPER_CHANNEL")
+                .unwrap_or_else(|_| DEFAULT_DEVELOPER_CHANNEL.to_owned())
+                .trim()
+                .to_owned(),
 
             database_url: req("DATABASE_URL")?,
             database_max_connections: num("DATABASE_MAX_CONNECTIONS", 10)?,
@@ -128,6 +141,22 @@ impl Config {
     /// Deep link that opens the "add me to a group" chat picker.
     pub fn add_to_group_url(&self) -> String {
         format!("https://t.me/{}?startgroup=true", self.bot_username)
+    }
+
+    /// The credit line appended to the bot's own messages, or empty when
+    /// `DEVELOPER_CHANNEL` is set to nothing.
+    pub fn credit_line(&self, lang: Lang) -> String {
+        if self.developer_channel.is_empty() {
+            return String::new();
+        }
+        format!(
+            "\n\n{}",
+            crate::t!(
+                lang,
+                "developer_channel",
+                channel = crate::util::text::escape_html(&self.developer_channel)
+            )
+        )
     }
 }
 

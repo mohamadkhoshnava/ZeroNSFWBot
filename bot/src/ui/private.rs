@@ -40,7 +40,7 @@ pub async fn start(app: &Arc<App>, lang: Lang) -> Screen {
             groups = groups
         ),
         t!(lang, "open_source", url = escape_html(&app.cfg.project_url)),
-    );
+    ) + &app.cfg.credit_line(lang);
 
     let keyboard = InlineKeyboardMarkup::new(vec![
         // A url button rather than a callback: this is the one action that has
@@ -85,7 +85,7 @@ fn help(app: &Arc<App>, lang: Lang) -> Screen {
             "{}\n\n{}",
             t!(lang, "help_body"),
             t!(lang, "open_source", url = escape_html(&app.cfg.project_url)),
-        ),
+        ) + &app.cfg.credit_line(lang),
         keyboard: InlineKeyboardMarkup::new(vec![vec![
             button(t!(lang, "btn_back"), CallbackAction::Pm(PmView::Start)),
             source_button(app, lang),

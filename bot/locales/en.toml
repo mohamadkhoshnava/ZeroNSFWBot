@@ -153,6 +153,7 @@ btn_test = "🧪 Test the detector"
 btn_help = "ℹ️ How it works"
 btn_source = "⭐ Source code"
 open_source = "<b>Open source.</b> The full code is public — improve it, or ask for features and report false positives in the issue tracker: {url}"
+developer_channel = "👨‍💻 Developer's channel: {channel}"
 help_body = """
 <b>How detection works</b>
 

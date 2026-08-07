@@ -98,6 +98,10 @@ pub async fn handle_my_chat_member(
         text.push_str(&t!(lang, "welcome_admin_hint"));
     }
 
+    // Only the welcome message carries the credit — putting it on every
+    // detection report would turn each ban into an advertisement.
+    text.push_str(&app.cfg.credit_line(lang));
+
     let keyboard = InlineKeyboardMarkup::new(vec![vec![
         InlineKeyboardButton::callback(
             t!(lang, "welcome_btn_settings"),
