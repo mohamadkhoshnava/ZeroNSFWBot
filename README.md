@@ -38,7 +38,7 @@ runs it past a set of independent filters:
 | `bio_keywords` | Adult advertising vocabulary in name, username or bio (4 languages) |
 | `name_pattern` | Display name shaped like an ad — invite link, `18+`, `👇 click` |
 | `profile_ocr` | Contact info written *onto* the avatar image |
-| `no_photo_link` | Avatar hidden by privacy settings, but a link in the bio |
+| `no_photo_link` | No visible avatar, but a link in the bio — **not used by any preset**, see below |
 | `reputation` | Already banned for this in *N* other groups |
 
 Each group's admins then choose which combination is enough to act on:
@@ -48,11 +48,24 @@ Each group's admins then choose which combination is enough to act on:
   being advertised. The fewest false positives, because a person with a racy
   avatar and no channel to sell is not a spammer.
 - **NSFW or keywords** — either the image or the ad copy.
-- **Strict** — any two independent signals agreeing.
+- **Strict** — any two of three independent categories: an NSFW image, contact
+  info (bio link *or* the same link read off the avatar — one fact, counted
+  once), or advertising vocabulary.
 - **Custom** — pick the exact filters yourself.
 
-A filter that *cannot* run — a bio hidden by privacy settings, say — reports
-"unknown", never "clean", so hiding a field is never a free pass.
+Two rules keep this honest, and both exist because breaking them produced real
+false positives:
+
+**Unavailable is never clean.** A filter that *cannot* run — a bio hidden by
+privacy settings, a failed photo lookup — reports "unknown", not "no match". An
+AND policy is never satisfied by a signal nobody could check.
+
+**No preset convicts without NSFW evidence.** `no_photo_link` is deliberately in
+no preset. "No avatar and a link in the bio" describes an enormous number of
+ordinary, privacy-conscious users and contains no evidence of NSFW content at
+all; it once banned a real group member on a report that read *NSFW probability:
+0%*. It remains available under **Custom**, where an admin pairs it with
+something else on purpose.
 
 ## Architecture
 
@@ -119,6 +132,7 @@ to remove them.
 | `/start` | private | anyone |
 | `/help` | private | anyone |
 | `/nsfw` | group | admins — a non-admin's message is deleted, with no reply |
+| `/unban <user_id>` | group | admins — or reply to the user's message with `/unban` |
 | `/info` | private | super-admins |
 | `/broadcast <users\|groups\|all> <text>` | private | super-admins |
 
@@ -237,8 +251,13 @@ empty and gitignored by design — this repository ships no adult material. See
 
 **Bios are not always readable.** `getChat` returns a user's bio only when their
 privacy settings allow it. Filters that depend on it report *unavailable*, which
-never satisfies an AND policy — that is why `no_photo_link` exists as the
-fallback for deliberately hidden profiles.
+never satisfies an AND policy.
+
+**Photo lookups are three-valued.** `PhotoAccess` distinguishes *Visible*,
+*Absent* (Telegram answered, there are none) and *Unknown* (not looked up, or
+the call failed). Collapsing the last two into a boolean is what let a transient
+`getUserProfilePhotos` error look like the positive signal "this account has no
+avatar" — and ban someone for it.
 
 **Pinned vs. current avatar.** The Bot API does not mark which profile photo is
 pinned; it returns the displayed one first. The bot scans the newest
@@ -246,8 +265,14 @@ pinned; it returns the displayed one first. The bot scans the newest
 both without extra requests.
 
 **False positives happen.** Artistic and anime avatars are the usual cause.
-Test mode, the grace window, the unban button and appeals are all defaults for
-that reason. Do not skip the calibration week.
+Test mode, the grace window, `/unban`, the false-positive button and appeals are
+all defaults for that reason. Do not skip the calibration week.
+
+**One bot, one token.** Two instances long-polling the same token fight over
+every update: each keeps terminating the other's `getUpdates`, and settings and
+statistics split across two databases. If the logs show
+`TerminatedByOtherGetUpdates`, another copy is running somewhere — find it
+before debugging anything else.
 
 **Caching.** Profile scans are keyed by Telegram's `file_unique_id`, which
 changes the moment a user swaps their avatar — so a cache hit provably refers to
@@ -264,6 +289,8 @@ The bot reads only what Telegram already exposes publicly. It stores scores,
 counts and the evidence strings shown in the Details view — not photos. The
 private-chat detector test stores nothing at all. Images are sent to the local
 detector container over the compose network and never leave your host.
+
+Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
