@@ -92,7 +92,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Build the bot image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./bot
           push: false
@@ -102,7 +102,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=bot
 
       - name: Build the detector image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./detector
           push: false
