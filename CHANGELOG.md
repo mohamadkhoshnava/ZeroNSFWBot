@@ -28,6 +28,22 @@ Notable changes to ZeroNSFWBot. Format follows
   `bio_link` and `profile_ocr`, because someone who pins a channel usually links
   it too, and that is one fact rather than two.
 
+### Fixed
+
+- **The bot no longer claims to have removed a comment it did not remove.**
+  A ban was issued with `revoke_messages`, and the code took that as proof the
+  offending comment was gone — it never called `deleteMessage` in the ban path
+  at all. When Telegram's sweep did not reach the comment, the group report, the
+  admin DM and the `detections` row all recorded a deletion that never happened,
+  while the comment sat in the group.
+
+  The comment is now deleted first, by its own call, and every downstream claim
+  comes from that call's result; `revoke_messages` stays on the ban to sweep the
+  rest of the spam run. "Message to delete not found" counts as removed, since
+  it means the comment is gone either way. New `report_banned_kept`,
+  `report_muted_kept` and `dm_notify_kept` strings cover the case where the
+  account was actioned but the comment survived.
+
 ### Fixed — moderation correctness
 
 The entries below all came out of one incident: a real group member was banned

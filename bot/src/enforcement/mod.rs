@@ -1,9 +1,12 @@
 //! Carries out a [`Verdict`] and reports what actually happened.
 //!
-//! Two rules shape the order of operations:
+//! Three rules shape the order of operations:
 //!
 //! * Moderation runs *before* the report, so the report can state the truth
 //!   about whether the ban and deletion succeeded.
+//! * The comment is deleted *before* the ban, and every claim about it comes
+//!   from that call's own result. A ban with `revoke_messages` usually removes
+//!   the comment too, but "usually" is not something a report may assert.
 //! * The report replies to the offending comment only when that comment still
 //!   exists — i.e. when deletion failed. Replying to a message the bot just
 //!   deleted would leave a dangling quote.
@@ -165,6 +168,31 @@ async fn execute(
         return done;
     }
 
+    // Delete before banning, and from the real result of the call.
+    //
+    // Banning with revoke_messages usually takes the comment with it, so this
+    // used to just assume the comment was gone and never call deleteMessage at
+    // all. When the sweep does not reach the comment — it is not guaranteed,
+    // least of all for channel comments — the comment stayed in the group while
+    // the report, the admin DM and the database all recorded it as deleted.
+    //
+    // Doing it first is also the only way to get a usable answer: after a ban,
+    // "message to delete not found" cannot distinguish a successful revoke from
+    // a comment that was never there.
+    if admins.bot_can_delete {
+        match bot.delete_message(chat_id, message_id).await {
+            Ok(_) => done.deleted = true,
+            // Already gone — the sender removed it, or another admin did.
+            Err(RequestError::Api(ApiError::MessageToDeleteNotFound)) => done.deleted = true,
+            Err(err) => {
+                tracing::warn!(%chat_id, %err, "delete failed");
+                done.problems.push("missing_delete_perm");
+            }
+        }
+    } else {
+        done.problems.push("missing_delete_perm");
+    }
+
     let wants_ban = action == Action::Ban;
     let wants_mute = action == Action::Mute;
 
@@ -177,12 +205,7 @@ async fn execute(
                 .revoke_messages(true)
                 .await
             {
-                Ok(_) => {
-                    done.banned = true;
-                    // Telegram deletes every message from a revoked member,
-                    // including the one that triggered this.
-                    done.deleted = true;
-                }
+                Ok(_) => done.banned = true,
                 Err(err) => {
                     tracing::warn!(%chat_id, user_id, %err, "ban failed");
                     done.problems.push("missing_ban_perm");
@@ -212,20 +235,6 @@ async fn execute(
         }
     }
 
-    if !done.deleted {
-        if admins.bot_can_delete {
-            match bot.delete_message(chat_id, message_id).await {
-                Ok(_) => done.deleted = true,
-                Err(err) => {
-                    tracing::warn!(%chat_id, %err, "delete failed");
-                    done.problems.push("missing_delete_perm");
-                }
-            }
-        } else {
-            done.problems.push("missing_delete_perm");
-        }
-    }
-
     done.problems.dedup();
     done
 }
@@ -244,20 +253,7 @@ async fn post_report(
 ) {
     let user = escape_html(&truncate(&ctx.display_name, 48));
 
-    let headline = if settings.dry_run {
-        t!(lang, "report_dry_run", user = user)
-    } else if executed.banned {
-        t!(lang, "report_banned", user = user)
-    } else if executed.muted {
-        t!(lang, "report_muted", user = user)
-    } else if executed.deleted {
-        t!(lang, "report_deleted_only", user = user)
-    } else {
-        // Detected, but every action failed — usually missing permissions. The
-        // problems list below carries the specifics; the headline must not
-        // claim test mode is on when it is not.
-        t!(lang, "report_no_action", user = user)
-    };
+    let headline = t!(lang, headline_key(settings.dry_run, executed), user = user);
 
     let mut text = format!(
         "{headline}\n{}\n{}",
@@ -308,6 +304,29 @@ async fn post_report(
     }
 }
 
+/// Pick the report headline for what actually happened.
+///
+/// Whether the comment survived is part of the outcome, not a detail: an admin
+/// reading "comment removed and X banned" stops looking for the comment. Every
+/// punishment therefore has a `_kept` variant for the case where the account
+/// was dealt with but the comment is still in the group.
+fn headline_key(dry_run: bool, executed: &Executed) -> &'static str {
+    if dry_run {
+        return "report_dry_run";
+    }
+    match (executed.banned, executed.muted, executed.deleted) {
+        (true, _, true) => "report_banned",
+        (true, _, false) => "report_banned_kept",
+        (false, true, true) => "report_muted",
+        (false, true, false) => "report_muted_kept",
+        (false, false, true) => "report_deleted_only",
+        // Detected, but every action failed — usually missing permissions. The
+        // problems list carries the specifics; the headline must not claim test
+        // mode is on when it is not.
+        (false, false, false) => "report_no_action",
+    }
+}
+
 /// Translate the filter ids into a human-readable list.
 fn reason_list(lang: Lang, reasons: &[&'static str]) -> String {
     reasons
@@ -338,11 +357,20 @@ async fn notify_admins(
         }
     };
 
+    // The DM used to state the comment was removed no matter what happened,
+    // which is how an admin ends up being told a comment is gone while it is
+    // still sitting in the group.
+    let key = if executed.deleted {
+        "dm_notify"
+    } else {
+        "dm_notify_kept"
+    };
+
     for admin_id in targets {
         let lang = db::users::lang_for_group_notice(&app.db, admin_id, settings.lang).await;
         let text = t!(
             lang,
-            "dm_notify",
+            key,
             chat = escape_html(settings.title.as_deref().unwrap_or("—")),
             user = escape_html(&truncate(&ctx.display_name, 48)),
             score = percent(verdict.score),
@@ -401,5 +429,96 @@ pub async fn handle_dm_failure(app: &Arc<App>, user_id: i64, err: &RequestError)
 
     if blocked && let Err(err) = db::users::mark_blocked(&app.db, user_id).await {
         tracing::warn!(%err, user_id, "could not mark user as blocked");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn executed(banned: bool, muted: bool, deleted: bool) -> Executed {
+        Executed {
+            banned,
+            deleted,
+            muted,
+            problems: Vec::new(),
+        }
+    }
+
+    /// The regression this whole change exists for: a ban whose message sweep
+    /// missed the comment was reported as "comment removed and X banned", so
+    /// admins were told a comment was gone while it was still in the group.
+    #[test]
+    fn a_ban_that_left_the_comment_says_so() {
+        assert_eq!(
+            headline_key(false, &executed(true, false, false)),
+            "report_banned_kept"
+        );
+        assert_eq!(
+            headline_key(false, &executed(true, false, true)),
+            "report_banned"
+        );
+    }
+
+    #[test]
+    fn a_mute_that_left_the_comment_says_so() {
+        assert_eq!(
+            headline_key(false, &executed(false, true, false)),
+            "report_muted_kept"
+        );
+        assert_eq!(
+            headline_key(false, &executed(false, true, true)),
+            "report_muted"
+        );
+    }
+
+    #[test]
+    fn no_headline_claims_a_deletion_that_did_not_happen() {
+        for (banned, muted) in [(false, false), (true, false), (false, true)] {
+            let key = headline_key(false, &executed(banned, muted, false));
+            assert!(
+                !matches!(
+                    key,
+                    "report_banned" | "report_muted" | "report_deleted_only"
+                ),
+                "{key} claims the comment was removed when it was not"
+            );
+        }
+    }
+
+    #[test]
+    fn a_deletion_on_its_own_is_reported_as_such() {
+        assert_eq!(
+            headline_key(false, &executed(false, false, true)),
+            "report_deleted_only"
+        );
+    }
+
+    #[test]
+    fn nothing_done_never_looks_like_test_mode() {
+        assert_eq!(
+            headline_key(false, &executed(false, false, false)),
+            "report_no_action"
+        );
+        assert_eq!(
+            headline_key(true, &executed(false, false, false)),
+            "report_dry_run"
+        );
+    }
+
+    /// Dry run reports what *would* have happened, so it must win over any
+    /// outcome flags that leaked through.
+    #[test]
+    fn dry_run_always_wins() {
+        assert_eq!(
+            headline_key(true, &executed(true, false, true)),
+            "report_dry_run"
+        );
+    }
+
+    #[test]
+    fn the_report_replies_only_to_a_comment_that_still_exists() {
+        assert!(executed(true, false, false).message_survived());
+        assert!(!executed(true, false, true).message_survived());
     }
 }

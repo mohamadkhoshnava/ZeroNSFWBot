@@ -36,8 +36,10 @@ missing_ban_perm = "⚠️ I could not ban the user — I lack the <b>Ban users<
 
 # ------------------------------------------------------------- detections --
 report_banned = "🚫 Comment removed and <b>{user}</b> banned."
+report_banned_kept = "🚫 <b>{user}</b> banned, but I could not remove their comment."
 report_deleted_only = "🧹 Comment by <b>{user}</b> removed."
 report_muted = "🔇 <b>{user}</b> muted and their comment removed."
+report_muted_kept = "🔇 <b>{user}</b> muted, but I could not remove their comment."
 report_dry_run = "🕶 <b>Test mode</b> — <b>{user}</b> would have been actioned, but nothing was changed."
 report_no_action = "⚠️ Flagged <b>{user}</b>, but I could not act."
 report_score = "NSFW profile probability: <b>{score}%</b>"
@@ -137,6 +139,7 @@ stats_none = "Nothing detected yet. 🎉"
 
 # --------------------------------------------------------- DM to the admin --
 dm_notify = "🛡 <b>{chat}</b>\n\nI removed a comment by <b>{user}</b>.\nNSFW probability: <b>{score}%</b>\nSignals: {reasons}"
+dm_notify_kept = "🛡 <b>{chat}</b>\n\nI actioned <b>{user}</b>, but their comment is still in the group.\nNSFW probability: <b>{score}%</b>\nSignals: {reasons}"
 
 # ----------------------------------------------------------- private chat --
 start_title = "🛡 <b>{bot}</b>"
