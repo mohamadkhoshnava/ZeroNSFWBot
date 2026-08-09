@@ -11,7 +11,7 @@ use zeronsfw_bot::{
     filters::{FilterRegistry, ScanReport},
     i18n::Lang,
     policy::{self, Action, Policy, Verdict},
-    scan::{PhotoAccess, ScanContext},
+    scan::{LinkedChannel, PersonalChannel, PhotoAccess, ScanContext},
 };
 
 fn defaults() -> GroupDefaults {
@@ -35,6 +35,7 @@ fn clean_context() -> ScanContext {
         display_name: "Maryam".into(),
         username: Some("maryam".into()),
         bio: Some("Photographer in Tehran".into()),
+        personal_channel: PersonalChannel::Absent,
         photos: PhotoAccess::Visible,
         profile_nsfw: Some(0.02),
         avatar_text: None,
@@ -112,6 +113,85 @@ async fn contact_info_hidden_on_the_avatar_still_counts_as_advertising() {
 
     assert!(report.triggered("profile_ocr"));
     assert!(verdict.matched);
+}
+
+/// The gap this filter closes: a spam account with a deliberately clean bio
+/// that advertises through the channel pinned to its profile instead. Before
+/// `profile_channel` existed the bio filters saw nothing and the default policy
+/// let it through.
+#[tokio::test]
+async fn an_nsfw_profile_advertising_through_its_attached_channel_is_banned() {
+    let mut ctx = clean_context();
+    ctx.profile_nsfw = Some(0.91);
+    // Nothing to find in the bio — that is the whole point.
+    ctx.bio = Some("just here for the memes".into());
+    ctx.personal_channel = PersonalChannel::Linked(LinkedChannel {
+        title: Some("Hot Videos 18+".into()),
+        username: Some("hot_videos_18".into()),
+    });
+
+    let (report, verdict) = run(&ctx).await;
+
+    assert!(!report.triggered("bio_link"), "the bio really is clean");
+    assert!(report.triggered("profile_channel"));
+    assert!(verdict.matched, "the channel is advertising like any link");
+    assert_eq!(verdict.action, Action::Ban);
+    assert!(
+        verdict.reasons.contains(&"profile_channel"),
+        "the ban report must name the channel: {:?}",
+        verdict.reasons
+    );
+}
+
+/// A private channel has no @handle, and attaching one is still advertising.
+#[tokio::test]
+async fn an_attached_private_channel_counts_too() {
+    let mut ctx = clean_context();
+    ctx.profile_nsfw = Some(0.91);
+    ctx.personal_channel = PersonalChannel::Linked(LinkedChannel {
+        title: Some("VIP".into()),
+        username: None,
+    });
+
+    let (report, verdict) = run(&ctx).await;
+
+    assert!(report.triggered("profile_channel"));
+    assert!(verdict.matched);
+}
+
+/// The same rule every other signal follows: an attached channel is contact
+/// info, not evidence of NSFW content, so it can never convict on its own.
+#[tokio::test]
+async fn an_attached_channel_alone_is_not_a_ban() {
+    let mut ctx = clean_context();
+    ctx.personal_channel = PersonalChannel::Linked(LinkedChannel {
+        title: Some("My cooking channel".into()),
+        username: Some("maryam_cooks".into()),
+    });
+
+    let (report, verdict) = run(&ctx).await;
+
+    assert!(report.triggered("profile_channel"));
+    assert!(
+        !verdict.matched,
+        "an ordinary person with their own channel is not a spammer"
+    );
+}
+
+/// Same discipline as the photo lookup: a `getChat` that failed must not read
+/// as "this profile has no channel", nor satisfy the contact half of an AND.
+#[tokio::test]
+async fn an_unknown_personal_channel_is_not_a_signal() {
+    let mut ctx = clean_context();
+    ctx.profile_nsfw = Some(0.95);
+    ctx.bio = None;
+    ctx.personal_channel = PersonalChannel::Unknown;
+
+    let (report, verdict) = run(&ctx).await;
+
+    let outcome = report.get("profile_channel").expect("filter ran");
+    assert!(!outcome.available, "a failed lookup is unknown, not absent");
+    assert!(!verdict.matched, "unknown must not satisfy an AND policy");
 }
 
 /// Regression for the false positive that banned a real group member at a

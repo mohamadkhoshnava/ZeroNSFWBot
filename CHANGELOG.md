@@ -6,6 +6,28 @@ Notable changes to ZeroNSFWBot. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`profile_channel` — the channel attached to a profile now counts as
+  advertising.** Telegram lets an account pin a channel to its profile, shown
+  there alongside the bio. Spam accounts had started leaving the bio empty or
+  innocent and advertising through that instead, which every bio-based filter is
+  blind to by construction — so the default `nsfw_and_contact` policy let an
+  obviously NSFW profile through as long as it kept its bio clean.
+
+  The new filter reads `personal_chat` off the `getChat` response the bio
+  already comes from, so it costs no extra Telegram traffic. It joins `bio_link`
+  and `profile_ocr` on the *contact* side of the decision: **NSFW + contact
+  info** and **strict** now act on it, and it is selectable under **Custom**.
+
+  It follows the same two rules as everything else. It never convicts alone — an
+  ordinary person with their own channel is not a spammer, so an NSFW signal is
+  still required. And it is three-valued: a failed `getChat` reports
+  *unavailable* rather than "no channel", so an API error cannot satisfy the
+  contact half of an AND. Under `strict` it shares the contact bucket with
+  `bio_link` and `profile_ocr`, because someone who pins a channel usually links
+  it too, and that is one fact rather than two.
+
 ### Fixed — moderation correctness
 
 The entries below all came out of one incident: a real group member was banned

@@ -19,6 +19,7 @@ mod bio_link;
 mod message_media;
 mod name_pattern;
 mod no_photo_link;
+mod profile_channel;
 mod profile_nsfw;
 mod profile_ocr;
 mod reputation;
@@ -43,6 +44,7 @@ filter_ids! {
     F_PROFILE_NSFW  => "profile_nsfw",
     F_MESSAGE_MEDIA => "message_media",
     F_BIO_LINK      => "bio_link",
+    F_PROFILE_CHANNEL => "profile_channel",
     F_BIO_KEYWORDS  => "bio_keywords",
     F_NAME_PATTERN  => "name_pattern",
     F_PROFILE_OCR   => "profile_ocr",
@@ -56,6 +58,9 @@ filter_ids! {
 pub struct Needs {
     pub profile_photos: bool,
     pub bio: bool,
+    /// The channel attached to the profile. Shares one `getChat` with `bio`,
+    /// so asking for both costs exactly one call.
+    pub personal_chat: bool,
     pub avatar_text: bool,
     pub message_media: bool,
     pub reputation: bool,
@@ -66,6 +71,7 @@ impl Needs {
         Self {
             profile_photos: self.profile_photos || other.profile_photos,
             bio: self.bio || other.bio,
+            personal_chat: self.personal_chat || other.personal_chat,
             // Reading text off the avatar implies downloading the avatar.
             avatar_text: self.avatar_text || other.avatar_text,
             message_media: self.message_media || other.message_media,
@@ -188,6 +194,7 @@ impl FilterRegistry {
                 Arc::new(profile_nsfw::ProfileNsfw),
                 Arc::new(message_media::MessageMedia),
                 Arc::new(bio_link::BioLink),
+                Arc::new(profile_channel::ProfileChannel),
                 Arc::new(bio_keywords::BioKeywords),
                 Arc::new(name_pattern::NamePattern),
                 Arc::new(profile_ocr::ProfileOcr),

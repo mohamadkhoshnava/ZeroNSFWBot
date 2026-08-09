@@ -10,7 +10,7 @@ use std::sync::Arc;
 use teloxide::{
     net::Download,
     prelude::*,
-    types::{ChatId, Message, PhotoSize, User, UserId},
+    types::{ChatFullInfo, ChatFullInfoKind, ChatId, Message, PhotoSize, User, UserId},
 };
 
 use crate::{
@@ -31,6 +31,8 @@ pub struct ScanContext {
     /// `None` means the bio could not be read (privacy settings, or Telegram
     /// declined). Filters must treat that as unknown, never as empty.
     pub bio: Option<String>,
+    /// The channel the account attached to its profile, if any.
+    pub personal_channel: PersonalChannel,
     /// Whether the account has a profile photo the bot can see.
     pub photos: PhotoAccess,
     /// Highest NSFW probability across the scanned profile photos.
@@ -62,6 +64,46 @@ pub enum PhotoAccess {
     Absent,
     /// Not looked up, or the lookup failed. Never a signal on its own.
     Unknown,
+}
+
+/// The channel a user attached to their Telegram profile.
+///
+/// Telegram lets an account pin a channel to its profile, and it is displayed
+/// there just like the bio. Spammers reach for it precisely because it is not
+/// bio text: an account whose bio is empty or innocent can still advertise a
+/// channel to everyone who opens the profile.
+///
+/// Three-valued for the same reason as [`PhotoAccess`]: "the profile has no
+/// channel" and "the lookup failed" are different facts, and collapsing them
+/// turns a transient `getChat` error into evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PersonalChannel {
+    /// Telegram reported a channel on the profile.
+    Linked(LinkedChannel),
+    /// Telegram answered and there was no channel.
+    Absent,
+    /// Not looked up, or the lookup failed. Never a signal on its own.
+    Unknown,
+}
+
+/// The parts of an attached channel worth showing in a detection report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedChannel {
+    pub title: Option<String>,
+    pub username: Option<String>,
+}
+
+impl LinkedChannel {
+    /// How the channel is named in a report: its @handle when it is public,
+    /// otherwise its title. Private channels have no handle, and an attached
+    /// private channel is still advertising.
+    pub fn label(&self) -> String {
+        match (&self.username, &self.title) {
+            (Some(username), _) => format!("@{username}"),
+            (None, Some(title)) => title.clone(),
+            (None, None) => "private channel".to_owned(),
+        }
+    }
 }
 
 impl ScanContext {
@@ -100,20 +142,22 @@ pub async fn collect(
     let chat_id = settings.chat_id;
     let user_id = user.id.0 as i64;
 
-    let (profile, bio, message_nsfw, other_group_bans) = tokio::join!(
+    let (profile, profile_chat, message_nsfw, other_group_bans) = tokio::join!(
         collect_profile(app, bot, user_id, needs),
-        collect_bio(bot, user_id, needs),
+        collect_profile_chat(bot, user_id, needs),
         collect_message_media(app, bot, message, needs),
         collect_reputation(app, user_id, chat_id, needs),
     );
 
     let (photos, profile_nsfw, avatar_text) = profile;
+    let (bio, personal_channel) = profile_chat;
 
     ScanContext {
         user_id,
         display_name: display_name(user),
         username: user.username.clone(),
         bio,
+        personal_channel,
         photos,
         profile_nsfw,
         avatar_text,
@@ -258,21 +302,59 @@ async fn fetch_profile_photos(app: &Arc<App>, bot: &Tg, user_id: i64) -> Fetched
     })
 }
 
-async fn collect_bio(bot: &Tg, user_id: i64, needs: Needs) -> Option<String> {
-    if !needs.bio {
-        return None;
+/// Returns `(bio, personal channel)`.
+///
+/// Both come out of a single `getChat`, so a group that scans bios gets the
+/// attached-channel signal for free — and vice versa.
+async fn collect_profile_chat(
+    bot: &Tg,
+    user_id: i64,
+    needs: Needs,
+) -> (Option<String>, PersonalChannel) {
+    if !needs.bio && !needs.personal_chat {
+        return (None, PersonalChannel::Unknown);
     }
 
-    // getChat against a user id returns their bio, but only for users the bot
-    // can see and only when their privacy settings allow it. Both failure modes
-    // land here as `None`, i.e. "unknown".
-    let chat = bot
-        .get_chat(ChatId(user_id))
-        .await
-        .inspect_err(|err| tracing::debug!(user_id, %err, "getChat for bio failed"))
-        .ok()?;
+    // getChat against a user id returns their bio and their attached channel,
+    // but only for users the bot can see and only when their privacy settings
+    // allow it. Both failure modes land here as "unknown".
+    let chat = match bot.get_chat(ChatId(user_id)).await {
+        Ok(chat) => chat,
+        Err(err) => {
+            tracing::debug!(user_id, %err, "getChat for the profile failed");
+            return (None, PersonalChannel::Unknown);
+        }
+    };
 
-    chat.bio().map(str::to_owned)
+    let bio = needs.bio.then(|| chat.bio().map(str::to_owned)).flatten();
+
+    let personal_channel = if needs.personal_chat {
+        match personal_chat(&chat) {
+            Some(channel) => PersonalChannel::Linked(channel),
+            // getChat succeeded and carried no channel, so this is a real fact.
+            None => PersonalChannel::Absent,
+        }
+    } else {
+        PersonalChannel::Unknown
+    };
+
+    (bio, personal_channel)
+}
+
+/// Read the attached channel out of a `getChat` response.
+///
+/// `personal_chat` only exists on private chats; teloxide models that as a
+/// variant rather than exposing an accessor, so the match is done here.
+fn personal_chat(chat: &ChatFullInfo) -> Option<LinkedChannel> {
+    let ChatFullInfoKind::Private(private) = &chat.kind else {
+        return None;
+    };
+
+    let channel = private.personal_chat.as_deref()?;
+    Some(LinkedChannel {
+        title: channel.title().map(str::to_owned),
+        username: channel.username().map(str::to_owned),
+    })
 }
 
 async fn collect_message_media(

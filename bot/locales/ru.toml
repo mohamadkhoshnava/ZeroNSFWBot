@@ -53,6 +53,7 @@ detection_expired = "Это обнаружение больше недоступ
 reason_profile_nsfw = "NSFW-аватар"
 reason_message_media = "NSFW-вложение в сообщении"
 reason_bio_link = "ссылка или @юзернейм в био"
+reason_profile_channel = "канал, привязанный к профилю"
 reason_bio_keywords = "взрослые ключевые слова в профиле"
 reason_name_pattern = "подозрительное имя или юзернейм"
 reason_profile_ocr = "контакты, написанные на аватаре"

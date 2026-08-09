@@ -35,6 +35,7 @@ runs it past a set of independent filters:
 | `profile_nsfw` | NSFW score of the profile photos (current + previous) |
 | `message_media` | NSFW score of media inside the comment |
 | `bio_link` | Link, `t.me/…` or `@username` in the bio |
+| `profile_channel` | A channel attached to the profile — advertising the bio never mentions |
 | `bio_keywords` | Adult advertising vocabulary in name, username or bio (4 languages) |
 | `name_pattern` | Display name shaped like an ad — invite link, `18+`, `👇 click` |
 | `profile_ocr` | Contact info written *onto* the avatar image |
@@ -45,12 +46,13 @@ Each group's admins then choose which combination is enough to act on:
 
 - **NSFW only** — the image alone.
 - **NSFW + contact info** *(default)* — an explicit avatar **and** something
-  being advertised. The fewest false positives, because a person with a racy
-  avatar and no channel to sell is not a spammer.
+  being advertised, whether that is a link in the bio, contact details on the
+  avatar, or a channel attached to the profile. The fewest false positives,
+  because a person with a racy avatar and no channel to sell is not a spammer.
 - **NSFW or keywords** — either the image or the ad copy.
 - **Strict** — any two of three independent categories: an NSFW image, contact
-  info (bio link *or* the same link read off the avatar — one fact, counted
-  once), or advertising vocabulary.
+  info (a bio link, the same link read off the avatar, or an attached channel —
+  one fact, counted once), or advertising vocabulary.
 - **Custom** — pick the exact filters yourself.
 
 Two rules keep this honest, and both exist because breaking them produced real
@@ -276,6 +278,11 @@ empty and gitignored by design — this repository ships no adult material. See
 **Bios are not always readable.** `getChat` returns a user's bio only when their
 privacy settings allow it. Filters that depend on it report *unavailable*, which
 never satisfies an AND policy.
+
+**The bio and the attached channel come from one call.** `getChat` carries both
+`bio` and `personal_chat`, so `profile_channel` adds no Telegram traffic on top
+of `bio_link`. Like the photo lookup it is three-valued — a channel, positively
+no channel, or a failed call — and only the first two are facts.
 
 **Photo lookups are three-valued.** `PhotoAccess` distinguishes *Visible*,
 *Absent* (Telegram answered, there are none) and *Unknown* (not looked up, or

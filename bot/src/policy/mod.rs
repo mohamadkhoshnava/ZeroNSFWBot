@@ -9,8 +9,8 @@ use std::{fmt, str::FromStr};
 use serde::{Deserialize, Serialize};
 
 use crate::filters::{
-    F_BIO_KEYWORDS, F_BIO_LINK, F_MESSAGE_MEDIA, F_NAME_PATTERN, F_PROFILE_NSFW, F_PROFILE_OCR,
-    F_REPUTATION, ScanReport,
+    F_BIO_KEYWORDS, F_BIO_LINK, F_MESSAGE_MEDIA, F_NAME_PATTERN, F_PROFILE_CHANNEL, F_PROFILE_NSFW,
+    F_PROFILE_OCR, F_REPUTATION, ScanReport,
 };
 
 /// What the bot does to a matched account.
@@ -138,7 +138,13 @@ impl Policy {
         ids.extend(match self {
             Policy::NsfwOnly => vec![F_PROFILE_NSFW, F_MESSAGE_MEDIA],
             Policy::NsfwAndContact => {
-                vec![F_PROFILE_NSFW, F_MESSAGE_MEDIA, F_BIO_LINK, F_PROFILE_OCR]
+                vec![
+                    F_PROFILE_NSFW,
+                    F_MESSAGE_MEDIA,
+                    F_BIO_LINK,
+                    F_PROFILE_CHANNEL,
+                    F_PROFILE_OCR,
+                ]
             }
             Policy::NsfwOrKeywords => {
                 vec![
@@ -152,6 +158,7 @@ impl Policy {
                 F_PROFILE_NSFW,
                 F_MESSAGE_MEDIA,
                 F_BIO_LINK,
+                F_PROFILE_CHANNEL,
                 F_BIO_KEYWORDS,
                 F_NAME_PATTERN,
                 F_PROFILE_OCR,
@@ -214,8 +221,15 @@ fn nsfw_image(report: &ScanReport) -> bool {
 }
 
 /// Does the account advertise a way to reach it?
+///
+/// The three places the same fact can be written: the bio text, the avatar
+/// image, and the channel attached to the profile. A spam account only needs
+/// one of them, so a policy that reads only the bio misses the ones that leave
+/// it empty and pin a channel instead.
 fn advertises_contact(report: &ScanReport) -> bool {
-    report.triggered(F_BIO_LINK) || report.triggered(F_PROFILE_OCR)
+    report.triggered(F_BIO_LINK)
+        || report.triggered(F_PROFILE_OCR)
+        || report.triggered(F_PROFILE_CHANNEL)
 }
 
 /// Apply a group's policy to a completed scan.
@@ -246,12 +260,13 @@ pub fn evaluate(
             // `no_photo_link` is excluded: it requires a bio link, so counting
             // it alongside `bio_link` would reach two from a single fact.
             Policy::Strict => {
-                // Three genuinely independent categories. `bio_link` and
-                // `profile_ocr` share a bucket because they are the same fact —
-                // "this account publishes a way to reach it" — just written in
-                // different places. Counting them separately reached two from
-                // one fact and would ban, say, a business whose logo carries
-                // the same website that is in its bio.
+                // Three genuinely independent categories. `bio_link`,
+                // `profile_ocr` and `profile_channel` share a bucket because
+                // they are the same fact — "this account publishes a way to
+                // reach it" — just written in different places. Counting them
+                // separately reached two from one fact and would ban, say, a
+                // business whose logo carries the same website that is in its
+                // bio, or anyone who both links and pins their own channel.
                 let image = u8::from(nsfw_image(report));
                 let contact = u8::from(advertises_contact(report));
                 let vocabulary =
@@ -325,6 +340,40 @@ mod tests {
             &[F_PROFILE_NSFW, F_PROFILE_OCR],
             Policy::NsfwAndContact
         ));
+    }
+
+    #[test]
+    fn an_attached_channel_is_advertising_like_a_bio_link() {
+        // The default preset must act on it, and must still need the NSFW half.
+        assert!(matched(
+            &[F_PROFILE_NSFW, F_PROFILE_CHANNEL],
+            Policy::NsfwAndContact
+        ));
+        assert!(!matched(&[F_PROFILE_CHANNEL], Policy::NsfwAndContact));
+        assert!(matched(
+            &[F_PROFILE_NSFW, F_PROFILE_CHANNEL],
+            Policy::Strict
+        ));
+    }
+
+    /// A bio link and an attached channel are one fact — "this account
+    /// publishes a way to reach it" — so `strict` must not reach its two-signal
+    /// bar from them alone. Most people who pin a channel also link it.
+    #[test]
+    fn strict_does_not_count_a_channel_and_a_bio_link_separately() {
+        assert!(!matched(&[F_BIO_LINK, F_PROFILE_CHANNEL], Policy::Strict));
+        assert!(!matched(
+            &[F_BIO_LINK, F_PROFILE_CHANNEL, F_PROFILE_OCR],
+            Policy::Strict
+        ));
+    }
+
+    #[test]
+    fn a_ban_report_names_the_attached_channel() {
+        let report = report(&[F_PROFILE_NSFW, F_PROFILE_CHANNEL]);
+        let verdict = evaluate(&report, Policy::NsfwAndContact, Action::Ban, &[], false);
+
+        assert!(verdict.reasons.contains(&F_PROFILE_CHANNEL));
     }
 
     /// Regression: this exact combination banned a real group member whose
