@@ -57,6 +57,24 @@ def collect(folder: pathlib.Path) -> list[pathlib.Path]:
     return sorted(p for p in folder.iterdir() if p.suffix.lower() in EXTENSIONS)
 
 
+def verify(paths: list[pathlib.Path]) -> dict[str, dict]:
+    """Second-stage scores, keyed by filename. Empty when no verifier exists."""
+    out: dict[str, dict] = {}
+    for start in range(0, len(paths), BATCH):
+        chunk = paths[start : start + BATCH]
+        images = [
+            {"id": p.name, "data": base64.b64encode(p.read_bytes()).decode()}
+            for p in chunk
+        ]
+        body = post("/verify", {"images": images})
+        if not body.get("available", True):
+            return {}
+        for result in body["results"]:
+            if not result.get("error"):
+                out[result["id"]] = result
+    return out
+
+
 def score(paths: list[pathlib.Path]) -> dict[str, float]:
     scores: dict[str, float] = {}
     for start in range(0, len(paths), BATCH):
@@ -74,7 +92,14 @@ def score(paths: list[pathlib.Path]) -> dict[str, float]:
 
 
 model = json.loads(urllib.request.urlopen(f"{DETECTOR_URL}/model", timeout=30).read())
-print(f"model: {model['model_id']}  labels={model['labels']}\n")
+print(f"fast    : {model['fast']['model_id']}  labels={model['fast']['labels']}")
+verifier = model.get("verifier")
+if verifier:
+    print(f"verifier: {verifier['model_id']}  labels={verifier['labels']}")
+    print(f"          counted as NSFW: {verifier['nsfw_labels']}")
+else:
+    print("verifier: none — the bot will decline to act on flagged images")
+print()
 
 sfw_files = collect(IMAGES_DIR / "sfw")
 nsfw_files = collect(IMAGES_DIR / "nsfw")
@@ -88,19 +113,38 @@ if not sfw_files and not nsfw_files:
 sfw_scores = score(sfw_files)
 nsfw_scores = score(nsfw_files)
 
+# Re-score everything with the verifier, not just what crossed a threshold:
+# seeing both columns side by side is the whole point of this script.
+verified = verify(sfw_files + nsfw_files) if verifier else {}
+
 for label, scores in (("SFW", sfw_scores), ("NSFW", nsfw_scores)):
     if not scores:
         continue
     print(f"{label} ({len(scores)} image(s))")
     for name, value in sorted(scores.items(), key=lambda kv: -kv[1]):
-        bar = "#" * round(value * 30)
-        print(f"  {value * 100:5.1f}%  {bar:<30}  {name}")
+        line = f"  fast {value * 100:5.1f}%"
+        if name in verified:
+            second = verified[name]
+            line += f"  ->  verified {second['nsfw'] * 100:5.1f}%"
+            top = sorted(second.get("labels", {}).items(), key=lambda kv: -kv[1])[:2]
+            if top:
+                line += "  [" + ", ".join(f"{k} {v * 100:.0f}%" for k, v in top) + "]"
+        print(f"{line}  {name}")
     print()
+
+if verified:
+    print("The bot acts on the verified column. A large drop from fast to")
+    print("verified is the second stage doing its job on stylised art.\n")
 
 if not nsfw_scores:
     print("No labelled positives in nsfw/, so recall cannot be measured.")
     print(f"See {IMAGES_DIR}/README.md — the folder is gitignored by design.")
     raise SystemExit(0)
+
+if verified:
+    sfw_scores = {k: verified[k]["nsfw"] for k in sfw_scores if k in verified}
+    nsfw_scores = {k: verified[k]["nsfw"] for k in nsfw_scores if k in verified}
+    print("Thresholds below are against the verified score.\n")
 
 print(f"{'thresh':>7} {'accuracy':>9} {'false pos':>10} {'false neg':>10}")
 print("-" * 40)

@@ -21,11 +21,13 @@ services:
       context: ./detector
       args:
         MODEL_ID: ${DETECTOR_MODEL_ID:-Marqo/nsfw-image-detection-384}
+        VERIFIER_MODEL_ID: ${VERIFIER_MODEL_ID:-giacomoarienti/nsfw-classifier}
         ENABLE_OCR: ${ENABLE_OCR:-true}
     restart: unless-stopped
     environment:
       DETECTOR_THREADS: ${DETECTOR_THREADS:-2}
       ENABLE_OCR: ${ENABLE_OCR:-true}
+      ENABLE_VERIFIER: ${ENABLE_VERIFIER:-true}
       OCR_LANGS: ${OCR_LANGS:-eng+fas+ara+rus}
       LOG_LEVEL: ${DETECTOR_LOG_LEVEL:-info}
     ports:

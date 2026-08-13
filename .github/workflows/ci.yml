@@ -130,6 +130,39 @@ jobs:
       - name: Model metadata
         run: curl -fsS http://localhost:8000/model
 
+      # The bot declines to act when the verifier is missing, so a silently
+      # unexported second model would look like "no more false positives" while
+      # actually meaning "no detection at all".
+      - name: The verifier must be loaded and multi-class
+        run: |
+          python3 - <<'PY'
+          import json, sys, urllib.request
+
+          health = json.loads(urllib.request.urlopen("http://localhost:8000/health").read())
+          if not health["verifier_loaded"]:
+              print("::error::the image built without a verifier model")
+              sys.exit(1)
+
+          info = json.loads(urllib.request.urlopen("http://localhost:8000/model").read())
+          verifier = info["verifier"]
+          print(f"verifier: {verifier['model_id']} {verifier['labels']}")
+
+          # The whole point of the second stage: `drawings` must be a class the
+          # model knows about, and must NOT be counted as NSFW.
+          labels = {l.lower() for l in verifier["labels"]}
+          counted = {l.lower() for l in verifier["nsfw_labels"]}
+
+          if "drawings" not in labels:
+              print("::error::the verifier cannot distinguish drawings; it adds nothing")
+              sys.exit(1)
+          if counted & {"drawings", "sexy", "neutral"}:
+              print(f"::error::{counted} counts a non-explicit class as NSFW")
+              sys.exit(1)
+          if not counted:
+              print("::error::no label counts as NSFW; every image would score 0")
+              sys.exit(1)
+          PY
+
       # The SFW samples are committed, so there is nothing to generate and no
       # Pillow to install on the runner.
       - name: Score the sample images
@@ -212,6 +245,7 @@ jobs:
               "RUST_LOG", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB",
               "POSTGRES_PORT", "DETECTOR_PORT", "DETECTOR_THREADS",
               "DETECTOR_MODEL_ID", "DETECTOR_LOG_LEVEL", "OCR_LANGS",
+              "VERIFIER_MODEL_ID", "ENABLE_VERIFIER",
           }
 
           undocumented = used - example

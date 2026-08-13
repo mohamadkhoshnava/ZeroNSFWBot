@@ -21,8 +21,14 @@ def _int(name: str, default: int) -> int:
 
 
 MODEL_DIR = Path(os.environ.get("MODEL_DIR", "/models"))
-MODEL_PATH = MODEL_DIR / "model.onnx"
-METADATA_PATH = MODEL_DIR / "metadata.json"
+# The fast screening model, run on every scanned image.
+FAST_MODEL_DIR = MODEL_DIR / "fast"
+# The slower, more precise model, run only on what the fast one flags.
+VERIFIER_MODEL_DIR = MODEL_DIR / "verifier"
+
+# The verifier can be built out of the image entirely; when it is missing,
+# /verify says so rather than pretending to have checked.
+ENABLE_VERIFIER = _bool("ENABLE_VERIFIER", True)
 
 THREADS = _int("DETECTOR_THREADS", 2)
 

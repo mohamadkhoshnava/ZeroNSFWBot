@@ -16,7 +16,7 @@ use teloxide::{
 use crate::{
     App, Tg,
     db::{self, models::GroupSettings},
-    detector::ImageItem,
+    detector::{ImageItem, Verification},
     filters::Needs,
 };
 
@@ -141,11 +141,13 @@ pub async fn collect(
 ) -> ScanContext {
     let chat_id = settings.chat_id;
     let user_id = user.id.0 as i64;
+    // Both stages of the cascade compare against the same group threshold.
+    let threshold = settings.threshold_ratio();
 
     let (profile, profile_chat, message_nsfw, other_group_bans) = tokio::join!(
-        collect_profile(app, bot, user_id, needs),
+        collect_profile(app, bot, user_id, needs, threshold),
         collect_profile_chat(bot, user_id, needs),
-        collect_message_media(app, bot, message, needs),
+        collect_message_media(app, bot, message, needs, threshold, user_id),
         collect_reputation(app, user_id, chat_id, needs),
     );
 
@@ -174,6 +176,7 @@ async fn collect_profile(
     bot: &Tg,
     user_id: i64,
     needs: Needs,
+    threshold: f32,
 ) -> (PhotoAccess, Option<f32>, Option<String>) {
     if !needs.profile_photos {
         // Nobody asked, so nothing is known — not "there is no photo".
@@ -222,14 +225,16 @@ async fn collect_profile(
         }
     });
 
-    let nsfw = match scores {
+    let fast = match scores {
         Ok(map) => map.values().copied().fold(f32::NEG_INFINITY, f32::max),
         Err(err) => {
             tracing::warn!(user_id, %err, "detector unavailable; profile score unknown");
             f32::NEG_INFINITY
         }
     };
-    let nsfw = (nsfw > f32::NEG_INFINITY).then_some(nsfw);
+    let fast = (fast > f32::NEG_INFINITY).then_some(fast);
+
+    let nsfw = confirm(app, &images, fast, threshold, "profile", user_id).await;
 
     let avatar_text = {
         let joined = ocr.into_values().collect::<Vec<_>>().join(" ");
@@ -253,6 +258,72 @@ async fn collect_profile(
     }
 
     (PhotoAccess::Visible, nsfw, avatar_text)
+}
+
+/// Second stage of the cascade: re-score with the heavier model, but only for
+/// images the fast one flagged.
+///
+/// The fast model has high recall and is cheap, which is exactly what you want
+/// running on every comment — but it over-flags stylised art, and an anime
+/// avatar is not pornography. The verifier is ~5x the parameters and, more
+/// importantly, has separate `drawings` and `sexy` classes, so it can say "this
+/// is a drawing" instead of "this is explicit".
+///
+/// Returns the score the rest of the pipeline should treat as authoritative:
+///
+/// * below the threshold → the fast score, unchanged (nothing to confirm)
+/// * verified            → the verifier's score, which is what gets reported
+/// * verifier missing    → `None`, i.e. *unknown*
+///
+/// That last case is deliberate. Falling back to the fast score would quietly
+/// restore the false positives this exists to prevent, so a scan that cannot be
+/// confirmed produces no image signal at all and no preset can act on it.
+async fn confirm(
+    app: &Arc<App>,
+    images: &[ImageItem],
+    fast: Option<f32>,
+    threshold: f32,
+    what: &str,
+    user_id: i64,
+) -> Option<f32> {
+    let fast_score = fast?;
+
+    // The overwhelming majority of scans stop here, which is what keeps the
+    // heavy model affordable.
+    if fast_score < threshold {
+        return Some(fast_score);
+    }
+
+    match app.detector.verify(images).await {
+        Verification::Checked { scores, labels } => {
+            let verified = scores.values().copied().fold(f32::NEG_INFINITY, f32::max);
+            if verified == f32::NEG_INFINITY {
+                tracing::warn!(user_id, what, "verifier returned no usable score");
+                return None;
+            }
+
+            // Logged at info because this is the decision an operator will want
+            // to inspect when a ban looks wrong — or when one fails to happen.
+            tracing::info!(
+                user_id,
+                what,
+                fast = fast_score,
+                verified,
+                labels = ?labels.values().next(),
+                "second-stage verification"
+            );
+            Some(verified)
+        }
+        Verification::Unavailable => {
+            tracing::warn!(
+                user_id,
+                what,
+                fast = fast_score,
+                "flagged but unverifiable; declining to treat it as a signal"
+            );
+            None
+        }
+    }
 }
 
 /// The three outcomes of asking Telegram for a user's profile photos, kept
@@ -362,6 +433,8 @@ async fn collect_message_media(
     bot: &Tg,
     message: &Message,
     needs: Needs,
+    threshold: f32,
+    user_id: i64,
 ) -> Option<f32> {
     if !needs.message_media {
         return None;
@@ -373,13 +446,19 @@ async fn collect_message_media(
         .inspect_err(|err| tracing::debug!(%err, "could not download message media"))
         .ok()?;
 
-    let item = ImageItem::new(photo.file.unique_id.0.clone(), &bytes);
-    let scores = app
+    let images = [ImageItem::new(photo.file.unique_id.0.clone(), &bytes)];
+    let fast = app
         .detector
-        .classify(std::slice::from_ref(&item))
+        .classify(&images)
         .await
-        .ok()?;
-    scores.into_values().next()
+        .ok()?
+        .into_values()
+        .next();
+
+    // Message media goes through the same two stages as an avatar. A shared
+    // anime picture is the identical false positive, and it lands in a group
+    // where everyone can see the bot got it wrong.
+    confirm(app, &images, fast, threshold, "message_media", user_id).await
 }
 
 /// The best still image in a message: a photo, or the thumbnail of a sticker,

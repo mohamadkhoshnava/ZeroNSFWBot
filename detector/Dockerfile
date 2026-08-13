@@ -4,17 +4,35 @@
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS exporter
 
+# The fast screening model, run on every image the bot scans.
 ARG MODEL_ID=Marqo/nsfw-image-detection-384
-# Generous retries: torch is a large download and the model comes from the HF
+# The verifier, run only on what the fast model flags. Its value is the
+# taxonomy, not just the extra parameters: `drawings` and `sexy` are separate
+# classes from `hentai` and `porn`, so an ordinary anime avatar stops being a
+# ban. Set to an empty string to build without it.
+ARG VERIFIER_MODEL_ID=giacomoarienti/nsfw-classifier
+# Generous retries: torch is a large download and the models come from the HF
 # hub, so a flaky link should slow the build down, not break it.
-ENV PIP_NO_CACHE_DIR=1 PIP_RETRIES=15 PIP_TIMEOUT=180 HF_HUB_DISABLE_TELEMETRY=1
+# HF_HUB_DISABLE_XET: the hub's default xet/CAS transfer path fails hard on an
+# unreliable link — a 350 MB weight download dies mid-stream with a CAS client
+# error rather than retrying. The classic HTTP path resumes properly.
+ENV PIP_NO_CACHE_DIR=1 PIP_RETRIES=15 PIP_TIMEOUT=180 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    HF_HUB_DISABLE_XET=1 \
+    HF_HUB_ENABLE_HF_TRANSFER=0
 
 WORKDIR /build
 COPY requirements-build.txt .
 RUN pip install --no-cache-dir -r requirements-build.txt
 
 COPY scripts/export_onnx.py scripts/
-RUN python scripts/export_onnx.py --model-id "${MODEL_ID}" --out-dir /models
+RUN python scripts/export_onnx.py --model-id "${MODEL_ID}" --out-dir /models/fast
+RUN if [ -n "${VERIFIER_MODEL_ID}" ]; then \
+      python scripts/export_onnx.py \
+        --model-id "${VERIFIER_MODEL_ID}" --out-dir /models/verifier; \
+    else \
+      echo "no verifier requested; /verify will report unavailable"; \
+    fi
 
 # ---------------------------------------------------------------------------
 # Stage 2 — runtime. onnxruntime only.

@@ -32,8 +32,8 @@ runs it past a set of independent filters:
 
 | Filter | Signal |
 |---|---|
-| `profile_nsfw` | NSFW score of the profile photos (current + previous) |
-| `message_media` | NSFW score of media inside the comment |
+| `profile_nsfw` | NSFW score of the profile photos (current + previous), after two-stage verification |
+| `message_media` | NSFW score of media inside the comment, after two-stage verification |
 | `bio_link` | Link, `t.me/…` or `@username` in the bio |
 | `profile_channel` | A channel attached to the profile — advertising the bio never mentions |
 | `bio_keywords` | Adult advertising vocabulary in name, username or bio (4 languages) |
@@ -82,10 +82,37 @@ something else on purpose.
                              └───────────────┘
 ```
 
-The classifier is [`Marqo/nsfw-image-detection-384`](https://huggingface.co/Marqo/nsfw-image-detection-384)
-— a ViT-tiny with ~18M parameters — exported to ONNX at image build time and
-served by onnxruntime on CPU. Torch and timm live only in a throwaway build
-stage, so the runtime image ships neither.
+### Two models, in a cascade
+
+Image scoring runs in two stages, because one model cannot be both cheap enough
+for every comment and precise enough to ban on.
+
+| | Model | Runs on | Classes |
+|---|---|---|---|
+| **1. Screen** | [`Marqo/nsfw-image-detection-384`](https://huggingface.co/Marqo/nsfw-image-detection-384) — ViT-tiny, ~18M params | every scanned image | `NSFW` · `SFW` |
+| **2. Verify** | [`giacomoarienti/nsfw-classifier`](https://huggingface.co/giacomoarienti/nsfw-classifier) — ViT-base, ~86M params | only what stage 1 flags | `drawings` · `hentai` · `neutral` · `porn` · `sexy` |
+
+The fast model has high recall and costs a few tens of milliseconds, which is
+what makes scanning every comment affordable. It also over-flags stylised art —
+an anime avatar is not pornography, but a two-class model has nowhere to put it.
+
+So anything it flags is re-scored by the verifier, and **only the verified score
+is acted on**. The verifier is worth its cost less for the extra parameters than
+for the taxonomy: `drawings` and `sexy` are separate classes from `hentai` and
+`porn`, so it can say *this is a drawing* instead of *this is explicit*. Only
+`hentai` and `porn` count towards the NSFW total — explicit anime is still
+caught, ordinary anime is not.
+
+Both stages compare against the same per-group threshold. The second stage can
+only ever *clear* someone the first stage flagged, never convict on its own.
+
+If the verifier is missing or unreachable, a flagged image produces **no image
+signal at all** rather than falling back to the fast score. Falling back would
+quietly reinstate exactly the false positives the cascade exists to prevent.
+
+Both models are exported to ONNX at image build time and served by onnxruntime
+on CPU. Torch, timm and transformers live only in a throwaway build stage, so
+the runtime image ships none of them.
 
 ---
 
@@ -295,7 +322,9 @@ pinned; it returns the displayed one first. The bot scans the newest
 `PROFILE_PHOTOS_TO_SCAN` (default 2) and takes the highest score, which covers
 both without extra requests.
 
-**False positives happen.** Artistic and anime avatars are the usual cause.
+**False positives happen.** Artistic and anime avatars were the usual cause,
+which is what the verifier stage addresses — but it reduces them, it does not
+eliminate them.
 Test mode, the grace window, `/unban`, the false-positive button and appeals are
 all defaults for that reason. Do not skip the calibration week.
 
@@ -305,10 +334,19 @@ statistics split across two databases. If the logs show
 `TerminatedByOtherGetUpdates`, another copy is running somewhere — find it
 before debugging anything else.
 
+**The verifier is not free.** It is ~5x the parameters of the screening model
+and runs on the small fraction of images that get flagged. On a group where most
+comments come from clean accounts that is a rounding error; on a group under an
+active spam run it is the dominant cost. `ENABLE_VERIFIER=false` disables it,
+but then flagged images produce no signal at all — the bot declines to act
+rather than trusting the model that over-flags.
+
 **Caching.** Profile scans are keyed by Telegram's `file_unique_id`, which
 changes the moment a user swaps their avatar — so a cache hit provably refers to
-the same image, and a spammer cannot hide behind a stale score. Users who scan
-clean are skipped for 15 minutes per group.
+the same image, and a spammer cannot hide behind a stale score. Cached rows also
+record which scoring pipeline produced them, so changing the models invalidates
+them instead of serving verdicts from a scorer that no longer exists. Users who
+scan clean are skipped for 15 minutes per group.
 
 **Permissions.** Ban and delete need `can_restrict_members` and
 `can_delete_messages`. When either is missing the bot says so in the report and

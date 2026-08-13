@@ -184,3 +184,114 @@ async fn health_reports_model_state() {
     assert!(health.model_loaded);
     assert_eq!(health.status, "ok");
 }
+
+// ---------------------------------------------------------------------------
+// Second-stage verification.
+//
+// The contract is asymmetric on purpose: a missing or broken verifier must be
+// reported as `Unavailable`, never as a pass-through of the fast score. The
+// fast model is the one that over-flags anime, so silently trusting it when the
+// second opinion is missing would reinstate exactly the bans this prevents.
+// ---------------------------------------------------------------------------
+
+use zeronsfw_bot::detector::Verification;
+
+#[tokio::test]
+async fn verify_returns_the_heavier_models_scores_and_labels() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/verify"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model_id": "verifier",
+            "available": true,
+            "results": [{
+                "id": "avatar", "nsfw": 0.04, "sfw": 0.96, "error": null,
+                "labels": {"drawings": 0.91, "hentai": 0.03, "neutral": 0.04,
+                           "porn": 0.01, "sexy": 0.01}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    match client(&server, false).verify(&[image("avatar")]).await {
+        Verification::Checked { scores, labels } => {
+            // The fast model would have called this explicit; the verifier says
+            // it is a drawing.
+            assert!((scores["avatar"] - 0.04).abs() < 1e-6);
+            assert!((labels["avatar"]["drawings"] - 0.91).abs() < 1e-6);
+        }
+        Verification::Unavailable => panic!("a healthy verifier must not report unavailable"),
+    }
+}
+
+#[tokio::test]
+async fn a_detector_without_a_verifier_reports_unavailable() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/verify"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model_id": "", "available": false, "results": []
+        })))
+        .mount(&server)
+        .await;
+
+    assert!(matches!(
+        client(&server, false).verify(&[image("a")]).await,
+        Verification::Unavailable
+    ));
+}
+
+#[tokio::test]
+async fn a_failing_verifier_reports_unavailable_rather_than_guessing() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/verify"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    assert!(matches!(
+        client(&server, false).verify(&[image("a")]).await,
+        Verification::Unavailable
+    ));
+}
+
+#[tokio::test]
+async fn verifying_nothing_makes_no_request() {
+    let server = MockServer::start().await;
+
+    assert!(matches!(
+        client(&server, false).verify(&[]).await,
+        Verification::Checked { .. }
+    ));
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn images_the_verifier_could_not_score_are_dropped() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/verify"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model_id": "verifier",
+            "available": true,
+            "results": [
+                {"id": "good", "nsfw": 0.8, "sfw": 0.2, "labels": {}, "error": null},
+                {"id": "bad", "nsfw": 0.0, "sfw": 0.0, "labels": {}, "error": "decode failed"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    match client(&server, false)
+        .verify(&[image("good"), image("bad")])
+        .await
+    {
+        Verification::Checked { scores, .. } => {
+            // A 0.0 for "bad" would drag a max() down and read as "confirmed safe".
+            assert_eq!(scores.len(), 1);
+            assert!(scores.contains_key("good"));
+        }
+        Verification::Unavailable => panic!("one bad image must not void the batch"),
+    }
+}
