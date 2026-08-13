@@ -97,6 +97,23 @@ struct OcrResponse {
     results: Vec<OcrResult>,
 }
 
+/// What `/model` reports about one loaded model.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelInfo {
+    pub model_id: String,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub nsfw_labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelsResponse {
+    pub fast: ModelInfo,
+    #[serde(default)]
+    pub verifier: Option<ModelInfo>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Health {
     pub status: String,
@@ -254,6 +271,24 @@ impl DetectorClient {
                 HashMap::new()
             }
         }
+    }
+
+    /// Which classes each loaded model produces.
+    ///
+    /// Read once at startup so the settings panel can offer exactly the
+    /// categories the configured verifier knows about — changing
+    /// `VERIFIER_MODEL_ID` changes the panel, with no hardcoded taxonomy in the
+    /// bot.
+    pub async fn models(&self) -> Result<ModelsResponse> {
+        Ok(self
+            .http
+            .get(format!("{}/model", self.base_url))
+            .send()
+            .await
+            .context("detector /model request failed")?
+            .error_for_status()?
+            .json()
+            .await?)
     }
 
     pub async fn health(&self) -> Result<Health> {

@@ -28,6 +28,7 @@ pub struct GroupRow {
     pub threshold: i16,
     pub policy: String,
     pub custom_filters: serde_json::Value,
+    pub nsfw_categories: serde_json::Value,
     pub action: String,
     pub dry_run: bool,
     pub grace_messages: i32,
@@ -40,6 +41,15 @@ pub struct GroupRow {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Classes counted as NSFW when a group has never chosen.
+///
+/// `sexy` and `drawings` are deliberately out: they are the two buckets that
+/// made the single-model pipeline unusable, and a group that wants them can say
+/// so explicitly.
+pub fn default_nsfw_categories() -> Vec<String> {
+    vec!["porn".to_owned(), "hentai".to_owned()]
+}
+
 /// The parsed, ready-to-use view of a [`GroupRow`].
 #[derive(Debug, Clone)]
 pub struct GroupSettings {
@@ -50,6 +60,9 @@ pub struct GroupSettings {
     pub threshold: i16,
     pub policy: Policy,
     pub custom_filters: Vec<String>,
+    /// Which of the verifier's classes this group treats as NSFW. Empty means
+    /// no image can ever be explicit, which the panel warns about.
+    pub nsfw_categories: Vec<String>,
     pub action: Action,
     pub dry_run: bool,
     pub grace_messages: i32,
@@ -74,6 +87,7 @@ impl GroupSettings {
             threshold: defaults.threshold,
             policy: defaults.policy,
             custom_filters: Vec::new(),
+            nsfw_categories: default_nsfw_categories(),
             action: defaults.action,
             dry_run: defaults.dry_run,
             grace_messages: defaults.grace_messages,
@@ -94,6 +108,8 @@ impl From<GroupRow> for GroupSettings {
             threshold: row.threshold.clamp(0, 100),
             policy: row.policy.parse().unwrap_or_default(),
             custom_filters: serde_json::from_value(row.custom_filters).unwrap_or_default(),
+            nsfw_categories: serde_json::from_value(row.nsfw_categories)
+                .unwrap_or_else(|_| default_nsfw_categories()),
             action: row.action.parse().unwrap_or_default(),
             dry_run: row.dry_run,
             grace_messages: row.grace_messages.max(0),
@@ -200,11 +216,32 @@ pub struct GlobalStats {
 }
 
 /// A cached profile scan, valid only while the photo fingerprint matches.
+///
+/// Deliberately group-independent. The cache is keyed by user and shared across
+/// every group the account appears in, so it stores the *evidence* — the
+/// screening score and the verifier's per-class breakdown — and each group
+/// derives its own verdict from that using its own chosen categories.
 #[derive(Debug, Clone, FromRow)]
 pub struct ScanCacheRow {
     pub photo_fingerprint: String,
+    /// What the screening model said. Group-independent.
     pub nsfw_score: f32,
     pub has_photo: bool,
     pub bio: Option<String>,
     pub ocr_text: Option<String>,
+    /// The verifier's per-class probabilities, or `NULL` when the account was
+    /// screened but never escalated — some group's threshold was high enough
+    /// that the second stage did not run.
+    pub verifier_labels: Option<serde_json::Value>,
+}
+
+impl ScanCacheRow {
+    /// The verifier's breakdown, strongest class first.
+    pub fn labels(&self) -> Option<Vec<(String, f32)>> {
+        let map: std::collections::HashMap<String, f32> =
+            serde_json::from_value(self.verifier_labels.clone()?).ok()?;
+        let mut out: Vec<(String, f32)> = map.into_iter().collect();
+        out.sort_by(|a, b| b.1.total_cmp(&a.1));
+        Some(out)
+    }
 }

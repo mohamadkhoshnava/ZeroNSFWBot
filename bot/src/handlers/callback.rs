@@ -221,6 +221,7 @@ fn affects_detection(action: &CallbackAction) -> bool {
         AdjustThreshold(_)
             | SetPolicy(_)
             | ToggleCustom(_)
+            | ToggleCategory(_)
             | SetAction(_)
             | ToggleDryRun
             | ToggleGlobal
@@ -258,6 +259,21 @@ async fn apply(
             } else {
                 PanelView::Policy
             }
+        }
+
+        ToggleCategory(name) => {
+            let mut categories = settings.nsfw_categories.clone();
+            match categories
+                .iter()
+                .position(|c| c.eq_ignore_ascii_case(&name))
+            {
+                Some(index) => {
+                    categories.remove(index);
+                }
+                None => categories.push(name),
+            }
+            db::groups::set_nsfw_categories(&app.db, chat_id, &categories).await?;
+            PanelView::Categories
         }
 
         ToggleCustom(filter) => {

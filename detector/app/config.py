@@ -35,9 +35,25 @@ THREADS = _int("DETECTOR_THREADS", 2)
 ENABLE_OCR = _bool("ENABLE_OCR", True)
 OCR_LANGS = os.environ.get("OCR_LANGS", "eng+fas+ara+rus")
 
+# Frame sampling for animations and clips. A GIF is only NSFW for part of its
+# run often enough that scoring the first frame — or the poster thumbnail
+# Telegram hands out — misses it entirely, so /frames spreads its samples over
+# the whole clip. Multi-frame stills (GIF, animated WebP, APNG) go through
+# Pillow; real video containers need ffmpeg, which the image installs unless
+# ENABLE_VIDEO was false at build time.
+ENABLE_VIDEO = _bool("ENABLE_VIDEO", True)
+MAX_FRAMES = _int("DETECTOR_MAX_FRAMES", 12)
+# Frames are handed straight to a 384px model, so anything larger is wasted
+# bytes on the wire and wasted pixels in the resize.
+FRAME_MAX_SIDE = _int("DETECTOR_FRAME_MAX_SIDE", 512)
+FFMPEG_TIMEOUT = _int("DETECTOR_FFMPEG_TIMEOUT_SECS", 20)
+
 # Guardrails so a hostile or malformed request cannot exhaust memory.
 MAX_BATCH = _int("DETECTOR_MAX_BATCH", 16)
 MAX_IMAGE_BYTES = _int("DETECTOR_MAX_IMAGE_BYTES", 12 * 1024 * 1024)
+# Clips are whole files rather than single stills, so they get their own,
+# larger cap — 20 MB is the most Telegram's getFile will ever serve anyway.
+MAX_MEDIA_BYTES = _int("DETECTOR_MAX_MEDIA_BYTES", 20 * 1024 * 1024)
 # Pillow refuses to decode images with more pixels than this (decompression
 # bombs). 80MP is far above anything Telegram will ever hand us.
 MAX_IMAGE_PIXELS = _int("DETECTOR_MAX_IMAGE_PIXELS", 80_000_000)

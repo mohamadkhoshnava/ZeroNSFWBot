@@ -6,6 +6,11 @@ The bot is the only client. Two endpoints score images:
 * ``/verify`` runs the slower, more precise model on the small fraction the
   fast one flagged.
 
+A third, ``/frames``, turns an animation or clip into a handful of stills the
+other two can then score. It is separate rather than folded into ``/classify``
+because the thresholds that decide what to do with those scores belong to the
+bot, per group — the detector's job stops at "here is what this frame is".
+
 Everything is best-effort per image: one corrupt avatar must never fail the
 whole batch, because the bot would then have no signal at all and let a spammer
 through.
@@ -21,12 +26,16 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
-from . import config, ocr
+from . import config, frames, ocr
 from .model import NsfwModel
 from .schemas import (
     ClassifyRequest,
     ClassifyResponse,
     ClassifyResult,
+    ExtractedFrame,
+    FramesRequest,
+    FramesResponse,
+    FramesResult,
     HealthResponse,
     ModelInfo,
     ModelInfoResponse,
@@ -60,7 +69,12 @@ async def lifespan(_app: FastAPI):
         # falling back to the fast model's opinion.
         log.warning("no verifier model loaded — /verify will report unavailable")
 
-    log.info("detector ready (verifier=%s, ocr=%s)", _verifier is not None, ocr.available())
+    log.info(
+        "detector ready (verifier=%s, ocr=%s, video=%s)",
+        _verifier is not None,
+        ocr.available(),
+        frames.video_available(),
+    )
     yield
     _fast = _verifier = None
 
@@ -74,10 +88,11 @@ def _require_fast() -> NsfwModel:
     return _fast
 
 
-def _decode(data: str) -> bytes:
+def _decode(data: str, limit: int | None = None) -> bytes:
+    cap = config.MAX_IMAGE_BYTES if limit is None else limit
     raw = base64.b64decode(data, validate=True)
-    if len(raw) > config.MAX_IMAGE_BYTES:
-        raise ValueError(f"image exceeds {config.MAX_IMAGE_BYTES} bytes")
+    if len(raw) > cap:
+        raise ValueError(f"image exceeds {cap} bytes")
     return raw
 
 
@@ -125,6 +140,7 @@ async def health() -> HealthResponse:
         model_loaded=_fast is not None,
         verifier_loaded=_verifier is not None,
         ocr_enabled=ocr.available(),
+        video_enabled=frames.video_available(),
     )
 
 

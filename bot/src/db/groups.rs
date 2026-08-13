@@ -15,7 +15,7 @@ use crate::{
 macro_rules! group_columns {
     () => {
         "chat_id, title, username, lang, lang_locked, threshold, policy, \
-         custom_filters, action, dry_run, grace_messages, delete_bot_messages, \
+         custom_filters, nsfw_categories, action, dry_run, grace_messages, delete_bot_messages, \
          bot_message_ttl_secs, global_blocklist, member_count, is_active, \
          added_at, updated_at"
     };
@@ -104,6 +104,16 @@ pub async fn set_policy(pool: &PgPool, chat_id: i64, policy: Policy) -> Result<(
     Ok(())
 }
 
+/// Replace the set of verifier classes this group acts on.
+pub async fn set_nsfw_categories(pool: &PgPool, chat_id: i64, categories: &[String]) -> Result<()> {
+    sqlx::query("UPDATE groups SET nsfw_categories = $2, updated_at = now() WHERE chat_id = $1")
+        .bind(chat_id)
+        .bind(serde_json::to_value(categories)?)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn set_custom_filters(pool: &PgPool, chat_id: i64, filters: &[String]) -> Result<()> {
     sqlx::query("UPDATE groups SET custom_filters = $2, updated_at = now() WHERE chat_id = $1")
         .bind(chat_id)
@@ -177,6 +187,7 @@ pub async fn reset(pool: &PgPool, chat_id: i64, defaults: &GroupDefaults) -> Res
         r#"
         UPDATE groups
         SET threshold = $2, policy = $3, action = $4, custom_filters = '[]',
+            nsfw_categories = '["porn", "hentai"]',
             dry_run = $5, grace_messages = $6, delete_bot_messages = $7,
             bot_message_ttl_secs = $8, global_blocklist = TRUE, updated_at = now()
         WHERE chat_id = $1

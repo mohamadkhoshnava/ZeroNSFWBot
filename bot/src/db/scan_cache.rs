@@ -5,25 +5,37 @@ use super::models::ScanCacheRow;
 
 /// Identifies the scoring pipeline whose output is cached.
 ///
-/// Bump this whenever a change alters what a score *means* — a new model, a new
-/// stage, a different label mapping. The photo fingerprint only detects a
-/// changed image; without this, a changed scorer would keep serving stale
-/// verdicts to every account already in the cache.
-pub const PIPELINE_VERSION: &str = "v2-verified";
+/// Bump this whenever a change alters what a cached row *means* — a new model,
+/// a new stage, a different column semantics. The photo fingerprint only
+/// detects a changed image; without this, a changed scorer would keep serving
+/// stale verdicts to every account already in the cache.
+///
+/// `v3` is where `nsfw_score` stopped being the final verdict and became the
+/// screening score, with `verifier_labels` alongside it.
+pub const PIPELINE_VERSION: &str = "v3-per-group-categories";
+
+/// Expands to the column list `ScanCacheRow` expects. A macro so the query
+/// stays a `&'static str` literal, which is what lets sqlx accept it without an
+/// injection-safety assertion.
+macro_rules! cache_columns {
+    () => {
+        "photo_fingerprint, nsfw_score, has_photo, bio, ocr_text, verifier_labels"
+    };
+}
 
 /// Look up a previous scan, but only accept it if the profile photos are still
-/// the same ones *and* the same pipeline produced the score.
+/// the same ones *and* the same pipeline produced the row.
 ///
 /// `fingerprint` is built from Telegram's `file_unique_id`s, which change the
 /// moment a user swaps their avatar. That makes staleness impossible to get
 /// wrong: a mismatch is a miss, so a spammer cannot hide behind a cached score
 /// by changing their picture.
 pub async fn get(pool: &PgPool, user_id: i64, fingerprint: &str) -> Result<Option<ScanCacheRow>> {
-    Ok(sqlx::query_as(
-        "SELECT photo_fingerprint, nsfw_score, has_photo, bio, ocr_text \
-         FROM scan_cache \
-         WHERE user_id = $1 AND photo_fingerprint = $2 AND pipeline = $3",
-    )
+    Ok(sqlx::query_as(concat!(
+        "SELECT ",
+        cache_columns!(),
+        " FROM scan_cache WHERE user_id = $1 AND photo_fingerprint = $2 AND pipeline = $3"
+    ))
     .bind(user_id)
     .bind(fingerprint)
     .bind(PIPELINE_VERSION)
@@ -31,6 +43,12 @@ pub async fn get(pool: &PgPool, user_id: i64, fingerprint: &str) -> Result<Optio
     .await?)
 }
 
+/// Store the evidence from a scan.
+///
+/// `verifier_labels` is `None` when the screening score fell below the group's
+/// threshold and the second stage never ran. A later group with a lower
+/// threshold verifies the same account and fills it in.
+#[allow(clippy::too_many_arguments)]
 pub async fn put(
     pool: &PgPool,
     user_id: i64,
@@ -39,12 +57,25 @@ pub async fn put(
     has_photo: bool,
     bio: Option<&str>,
     ocr_text: Option<&str>,
+    verifier_labels: Option<&[(String, f32)]>,
 ) -> Result<()> {
+    let labels = verifier_labels
+        .map(|pairs| {
+            serde_json::to_value(
+                pairs
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::HashMap<_, _>>(),
+            )
+        })
+        .transpose()?;
+
     sqlx::query(
         r#"
         INSERT INTO scan_cache
-            (user_id, photo_fingerprint, nsfw_score, has_photo, bio, ocr_text, pipeline)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+            (user_id, photo_fingerprint, nsfw_score, has_photo, bio, ocr_text,
+             pipeline, verifier_labels)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (user_id) DO UPDATE
             SET photo_fingerprint = EXCLUDED.photo_fingerprint,
                 nsfw_score        = EXCLUDED.nsfw_score,
@@ -52,6 +83,11 @@ pub async fn put(
                 bio               = EXCLUDED.bio,
                 ocr_text          = EXCLUDED.ocr_text,
                 pipeline          = EXCLUDED.pipeline,
+                -- Never overwrite a breakdown with NULL: a group whose
+                -- threshold skipped verification would otherwise erase what a
+                -- stricter group already established about the same account.
+                verifier_labels   = COALESCE(EXCLUDED.verifier_labels,
+                                             scan_cache.verifier_labels),
                 scanned_at        = now()
         "#,
     )
@@ -62,13 +98,14 @@ pub async fn put(
     .bind(bio)
     .bind(ocr_text)
     .bind(PIPELINE_VERSION)
+    .bind(labels)
     .execute(pool)
     .await?;
     Ok(())
 }
 
 /// Drop entries older than `days`, so a profile is eventually re-checked even
-/// if its photo never changes and the model has improved since.
+/// if its photo never changes and the models have improved since.
 ///
 /// Also sweeps rows left behind by a previous pipeline, which can never be read
 /// again and would otherwise sit there until their age caught up with them.

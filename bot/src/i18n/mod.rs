@@ -60,6 +60,19 @@ pub fn lookup(lang: Lang, key: &str) -> &'static str {
         })
 }
 
+/// Look up a message without falling back or warning.
+///
+/// For keys built from data the bot does not control — a model's class names,
+/// say — where a miss is expected and the caller has a better fallback than
+/// `⟦key⟧`.
+pub fn lookup_opt(lang: Lang, key: &str) -> Option<&'static str> {
+    CATALOGS
+        .get(lang.code())
+        .and_then(|c| c.get(key))
+        .or_else(|| CATALOGS.get(Lang::En.code()).and_then(|c| c.get(key)))
+        .map(|s| s.as_str())
+}
+
 /// All keys defined for a language. Used by the completeness test.
 pub fn keys(lang: Lang) -> Vec<&'static str> {
     CATALOGS

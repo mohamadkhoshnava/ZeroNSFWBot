@@ -67,6 +67,7 @@ pub async fn render(
         PanelView::Threshold => threshold(settings, lang),
         PanelView::Policy => policy(settings, lang),
         PanelView::Custom => custom(settings, lang),
+        PanelView::Categories => categories(app, settings, lang),
         PanelView::Action => action(settings, lang),
         PanelView::Lang => language(settings, lang),
         PanelView::Notify => notify(app, settings, admin_id, lang).await,
@@ -261,6 +262,57 @@ fn custom(settings: &GroupSettings, lang: Lang) -> Screen {
         CallbackAction::Panel(PanelView::Policy),
     )]);
 
+    Screen {
+        text,
+        keyboard: InlineKeyboardMarkup::new(rows),
+    }
+}
+
+/// Which of the verifier's classes this group treats as explicit.
+///
+/// The list comes from the detector, not from a constant here, so pointing
+/// `VERIFIER_MODEL_ID` at a different model changes what admins can pick with
+/// no code change.
+fn categories(app: &Arc<App>, settings: &GroupSettings, lang: Lang) -> Screen {
+    let mut text = t!(lang, "categories_title");
+
+    if app.verifier_categories.is_empty() {
+        text.push_str("\n\n⚠️ ");
+        text.push_str(&t!(lang, "categories_unavailable"));
+        return Screen {
+            text,
+            keyboard: InlineKeyboardMarkup::new(vec![back_row(lang)]),
+        };
+    }
+
+    if settings.nsfw_categories.is_empty() {
+        text.push_str("\n\n⚠️ ");
+        text.push_str(&t!(lang, "categories_none"));
+    }
+
+    let mut rows: Vec<Vec<InlineKeyboardButton>> = app
+        .verifier_categories
+        .iter()
+        .map(|name| {
+            let selected = settings
+                .nsfw_categories
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(name));
+            // Fall back to the raw class name: a swapped-in model may have
+            // classes this build has never heard of, and showing `⟦…⟧` would be
+            // worse than showing what the model actually calls it.
+            let label = match crate::i18n::lookup_opt(lang, &format!("category_{name}")) {
+                Some(translated) => translated.to_owned(),
+                None => name.clone(),
+            };
+            vec![button(
+                checkbox(selected, label),
+                CallbackAction::ToggleCategory(name.clone()),
+            )]
+        })
+        .collect();
+
+    rows.push(back_row(lang));
     Screen {
         text,
         keyboard: InlineKeyboardMarkup::new(rows),

@@ -45,6 +45,43 @@ class VerifyResponse(ClassifyResponse):
     available: bool = True
 
 
+class FramesRequest(BaseModel):
+    # Whole media files (GIF, MP4, WebM, WebP, or an ordinary still), base64
+    # encoded. Same shape as ClassifyRequest so the bot reuses one item type.
+    images: list[ImageItem] = Field(default_factory=list)
+    # How many stills to spread over each clip. Clamped to DETECTOR_MAX_FRAMES.
+    max_frames: int = 5
+
+
+class ExtractedFrame(BaseModel):
+    # "<item id>#<n>", so the caller can feed these straight to /classify and
+    # still trace a score back to the clip it came from.
+    id: str
+    # Position in the source, 0-based.
+    index: int
+    # Base64-encoded JPEG.
+    data: str
+
+
+class FramesResult(BaseModel):
+    id: str
+    frames: list[ExtractedFrame] = Field(default_factory=list)
+    # Frames in the source, 0 when the decoder could not say.
+    total: int = 0
+    # Which decoder ran: "still", "pillow" or "ffmpeg".
+    decoder: str = ""
+    # Set instead of frames when this one file failed; the batch survives.
+    error: str | None = None
+
+
+class FramesResponse(BaseModel):
+    results: list[FramesResult]
+    # False when this build cannot decode video containers at all, so the
+    # caller can fall back to Telegram's thumbnail instead of assuming the
+    # clip was checked.
+    video_enabled: bool = True
+
+
 class OcrRequest(BaseModel):
     images: list[ImageItem] = Field(default_factory=list)
     langs: str | None = None
@@ -66,6 +103,8 @@ class HealthResponse(BaseModel):
     model_loaded: bool
     verifier_loaded: bool
     ocr_enabled: bool
+    # Whether ffmpeg is present, i.e. whether /frames can sample real video.
+    video_enabled: bool = False
 
 
 class ModelInfo(BaseModel):

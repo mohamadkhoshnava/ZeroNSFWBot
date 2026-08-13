@@ -477,3 +477,90 @@ fn an_unverified_detail_shows_one_number_not_a_misleading_arrow() {
     // imply a confirmation that never happened.
     assert_eq!(ImageScoring::screened(0.061).detail(), "6%");
 }
+
+// ---------------------------------------------------------------------------
+// Per-group NSFW categories.
+// ---------------------------------------------------------------------------
+
+/// The same verifier breakdown, two groups, two correct answers. This is the
+/// whole reason categories are per-group rather than baked into the image.
+#[test]
+fn the_same_breakdown_scores_differently_per_group() {
+    let labels = vec![
+        ("sexy".to_string(), 0.90),
+        ("drawings".to_string(), 0.06),
+        ("porn".to_string(), 0.02),
+        ("hentai".to_string(), 0.01),
+        ("neutral".to_string(), 0.01),
+    ];
+
+    // Default: only explicit classes count, so a suggestive photo passes.
+    let lenient = ImageScoring::verified(0.94, labels.clone(), &["porn".into(), "hentai".into()]);
+    assert!((lenient.score - 0.03).abs() < 1e-5, "got {}", lenient.score);
+
+    // A stricter group counts `sexy` too, and the same image is now explicit.
+    let strict = ImageScoring::verified(
+        0.94,
+        labels.clone(),
+        &["porn".into(), "hentai".into(), "sexy".into()],
+    );
+    assert!((strict.score - 0.93).abs() < 1e-5, "got {}", strict.score);
+
+    // An art community that also bans drawn explicit content but not art.
+    let art = ImageScoring::verified(0.94, labels, &["porn".into()]);
+    assert!((art.score - 0.02).abs() < 1e-5, "got {}", art.score);
+}
+
+#[test]
+fn no_categories_means_nothing_is_ever_explicit() {
+    // The panel warns about this, but the arithmetic must agree with the
+    // warning rather than quietly falling back to some default.
+    let scoring = ImageScoring::verified(
+        0.99,
+        vec![("porn".into(), 0.99), ("neutral".into(), 0.01)],
+        &[],
+    );
+    assert_eq!(scoring.score, 0.0);
+}
+
+#[test]
+fn category_matching_ignores_case() {
+    let scoring = ImageScoring::verified(
+        0.9,
+        vec![("Porn".into(), 0.8), ("Neutral".into(), 0.2)],
+        &["porn".into()],
+    );
+    assert!((scoring.score - 0.8).abs() < 1e-5);
+}
+
+/// End to end: a group that counts `sexy` bans the avatar the default group
+/// cleared. Same image, same models, different policy.
+#[tokio::test]
+async fn a_group_that_counts_sexy_acts_on_a_suggestive_avatar() {
+    let breakdown = vec![("sexy".to_string(), 0.96), ("porn".to_string(), 0.01)];
+
+    let mut ctx = clean_context();
+    ctx.bio = Some("t.me/my_channel".into());
+    ctx.profile_nsfw = Some(ImageScoring::verified(
+        0.94,
+        breakdown.clone(),
+        &ctx.settings.nsfw_categories,
+    ));
+
+    let (_, verdict) = run(&ctx).await;
+    assert!(!verdict.matched, "the default categories exclude `sexy`");
+
+    ctx.settings.nsfw_categories = vec!["porn".into(), "hentai".into(), "sexy".into()];
+    ctx.profile_nsfw = Some(ImageScoring::verified(
+        0.94,
+        breakdown,
+        &ctx.settings.nsfw_categories,
+    ));
+
+    let (report, verdict) = run(&ctx).await;
+    assert!(report.triggered("profile_nsfw"));
+    assert!(
+        verdict.matched,
+        "this group asked for suggestive avatars to count"
+    );
+}

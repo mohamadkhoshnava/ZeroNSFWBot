@@ -98,6 +98,26 @@ impl ImageScoring {
         }
     }
 
+    /// A verified score, derived from the classes *this group* counts.
+    ///
+    /// The same breakdown yields different numbers in different groups, which
+    /// is the point: an art community counting only `porn` and a strict group
+    /// also counting `sexy` are both right, and neither needs its own model.
+    pub fn verified(fast: f32, labels: Vec<(String, f32)>, categories: &[String]) -> Self {
+        let score = labels
+            .iter()
+            .filter(|(name, _)| categories.iter().any(|c| c.eq_ignore_ascii_case(name)))
+            .map(|(_, value)| value)
+            .sum();
+
+        Self {
+            fast,
+            score,
+            verified: true,
+            labels,
+        }
+    }
+
     /// A compact, language-neutral summary for the detection report.
     ///
     /// Deliberately not translated: it is stored in the database with the
@@ -198,9 +218,24 @@ pub async fn collect(
     let threshold = settings.threshold_ratio();
 
     let (profile, profile_chat, message_nsfw, other_group_bans) = tokio::join!(
-        collect_profile(app, bot, user_id, needs, threshold),
+        collect_profile(
+            app,
+            bot,
+            user_id,
+            needs,
+            threshold,
+            &settings.nsfw_categories
+        ),
         collect_profile_chat(bot, user_id, needs),
-        collect_message_media(app, bot, message, needs, threshold, user_id),
+        collect_message_media(
+            app,
+            bot,
+            message,
+            needs,
+            threshold,
+            &settings.nsfw_categories,
+            user_id
+        ),
         collect_reputation(app, user_id, chat_id, needs),
     );
 
@@ -230,6 +265,7 @@ async fn collect_profile(
     user_id: i64,
     needs: Needs,
     threshold: f32,
+    categories: &[String],
 ) -> (PhotoAccess, Option<ImageScoring>, Option<String>) {
     if !needs.profile_photos {
         // Nobody asked, so nothing is known — not "there is no photo".
@@ -248,13 +284,29 @@ async fn collect_profile(
     // A cache hit means the fingerprint matched, so these exact photos have
     // already been scored and nothing needs downloading.
     if let Ok(Some(cached)) = db::scan_cache::get(&app.db, user_id, &photos.fingerprint).await {
-        // The cache stores the authoritative score, already verified when it
-        // was written — there is no second stage to re-run or re-report.
-        return (
-            PhotoAccess::Visible,
-            Some(ImageScoring::screened(cached.nsfw_score)),
-            cached.ocr_text.filter(|t| !t.is_empty()),
-        );
+        let ocr = cached.ocr_text.clone().filter(|t| !t.is_empty());
+
+        // The cache holds evidence, not a verdict: the screening score plus the
+        // verifier's breakdown. This group derives its own number from that,
+        // so two groups with different categories reuse one scan and still get
+        // different — correct — answers.
+        let scoring = match cached.labels() {
+            Some(labels) => Some(ImageScoring::verified(
+                cached.nsfw_score,
+                labels,
+                categories,
+            )),
+            // Screened before but never escalated, because whichever group
+            // scanned it had a higher threshold. If it is over *this* group's
+            // threshold it still needs verifying, so fall through to a fresh
+            // scan rather than acting on the screening score alone.
+            None if cached.nsfw_score >= threshold => None,
+            None => Some(ImageScoring::screened(cached.nsfw_score)),
+        };
+
+        if let Some(scoring) = scoring {
+            return (PhotoAccess::Visible, Some(scoring), ocr);
+        }
     }
 
     let mut images = Vec::with_capacity(photos.largest.len());
@@ -289,7 +341,10 @@ async fn collect_profile(
     };
     let fast = (fast > f32::NEG_INFINITY).then_some(fast);
 
-    let nsfw = confirm(app, &images, fast, threshold, "profile", user_id).await;
+    let nsfw = confirm(
+        app, &images, fast, threshold, categories, "profile", user_id,
+    )
+    .await;
 
     let avatar_text = {
         let joined = ocr.into_values().collect::<Vec<_>>().join(" ");
@@ -301,10 +356,13 @@ async fn collect_profile(
             &app.db,
             user_id,
             &photos.fingerprint,
-            scoring.score,
+            // Store the screening score, not the derived one: the derived score
+            // belongs to this group's categories and the cache is shared.
+            scoring.fast,
             true,
             None,
             avatar_text.as_deref(),
+            scoring.verified.then_some(scoring.labels.as_slice()),
         )
         .await;
         if let Err(err) = cache_write {
@@ -338,6 +396,7 @@ async fn confirm(
     images: &[ImageItem],
     fast: Option<f32>,
     threshold: f32,
+    categories: &[String],
     what: &str,
     user_id: i64,
 ) -> Option<ImageScoring> {
@@ -364,12 +423,13 @@ async fn confirm(
                 return None;
             };
 
-            let mut top: Vec<(String, f32)> = labels
+            let mut breakdown: Vec<(String, f32)> = labels
                 .get(&id)
                 .map(|m| m.iter().map(|(k, v)| (k.clone(), *v)).collect())
                 .unwrap_or_default();
-            top.sort_by(|a, b| b.1.total_cmp(&a.1));
-            top.truncate(3);
+            breakdown.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+            let scoring = ImageScoring::verified(fast_score, breakdown, categories);
 
             // Logged at info because this is the decision an operator will want
             // to inspect when a ban looks wrong — or when one fails to happen.
@@ -377,17 +437,14 @@ async fn confirm(
                 user_id,
                 what,
                 fast = fast_score,
-                verified,
-                labels = ?top,
+                detector_total = verified,
+                group_score = scoring.score,
+                categories = ?categories,
+                labels = ?scoring.labels,
                 "second-stage verification"
             );
 
-            Some(ImageScoring {
-                fast: fast_score,
-                score: verified,
-                verified: true,
-                labels: top,
-            })
+            Some(scoring)
         }
         Verification::Unavailable => {
             tracing::warn!(
@@ -509,6 +566,7 @@ async fn collect_message_media(
     message: &Message,
     needs: Needs,
     threshold: f32,
+    categories: &[String],
     user_id: i64,
 ) -> Option<ImageScoring> {
     if !needs.message_media {
@@ -533,7 +591,16 @@ async fn collect_message_media(
     // Message media goes through the same two stages as an avatar. A shared
     // anime picture is the identical false positive, and it lands in a group
     // where everyone can see the bot got it wrong.
-    confirm(app, &images, fast, threshold, "message_media", user_id).await
+    confirm(
+        app,
+        &images,
+        fast,
+        threshold,
+        categories,
+        "message_media",
+        user_id,
+    )
+    .await
 }
 
 /// The best still image in a message: a photo, or the thumbnail of a sticker,

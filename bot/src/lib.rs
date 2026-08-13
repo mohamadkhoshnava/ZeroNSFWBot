@@ -61,6 +61,10 @@ pub struct App {
     pub broadcasts: BroadcastRegistry,
     pub bot_id: i64,
     pub started_at: DateTime<Utc>,
+    /// The verifier's classes, discovered from the detector at startup. Empty
+    /// when no verifier is loaded, which the categories panel reports rather
+    /// than offering a list that cannot take effect.
+    pub verifier_categories: Vec<String>,
 }
 
 impl App {
@@ -71,6 +75,16 @@ impl App {
             cfg.detector_timeout,
             cfg.enable_ocr,
         )?;
+
+        // Best effort: a detector that is still loading its model must not stop
+        // the bot from starting. The panel says so, and a restart picks it up.
+        let verifier_categories = match detector.models().await {
+            Ok(models) => models.verifier.map(|v| v.labels).unwrap_or_default(),
+            Err(err) => {
+                tracing::warn!(%err, "could not read the detector's model list");
+                Vec::new()
+            }
+        };
 
         Ok(Arc::new(Self {
             admins: AdminCache::new(cfg.admin_cache_ttl),
@@ -90,6 +104,7 @@ impl App {
             cfg,
             bot_id,
             started_at: Utc::now(),
+            verifier_categories,
         }))
     }
 
