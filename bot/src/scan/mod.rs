@@ -35,12 +35,13 @@ pub struct ScanContext {
     pub personal_channel: PersonalChannel,
     /// Whether the account has a profile photo the bot can see.
     pub photos: PhotoAccess,
-    /// Highest NSFW probability across the scanned profile photos.
-    pub profile_nsfw: Option<f32>,
+    /// Highest NSFW probability across the scanned profile photos, with the
+    /// working that produced it.
+    pub profile_nsfw: Option<ImageScoring>,
     /// Text read off the avatar, when OCR is enabled and found something.
     pub avatar_text: Option<String>,
     /// NSFW probability of media attached to this specific message.
-    pub message_nsfw: Option<f32>,
+    pub message_nsfw: Option<ImageScoring>,
     /// Bans for this account in other groups. `None` when not looked up.
     pub other_group_bans: Option<i64>,
 
@@ -64,6 +65,58 @@ pub enum PhotoAccess {
     Absent,
     /// Not looked up, or the lookup failed. Never a signal on its own.
     Unknown,
+}
+
+/// How an image's NSFW score was arrived at.
+///
+/// Both stages are kept, not just the final number, because "the fast model
+/// said 88% and the verifier said 4%" and "both models said 88%" are very
+/// different situations for an admin reviewing a ban — and with only the final
+/// score they look identical.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageScoring {
+    /// What the fast screening model said.
+    pub fast: f32,
+    /// The authoritative score: the verifier's when it ran, else the fast one.
+    pub score: f32,
+    /// Whether the second stage actually ran.
+    pub verified: bool,
+    /// The verifier's leading labels, strongest first. This is what shows an
+    /// admin *why* — `drawings 76%` explains a cleared avatar at a glance.
+    pub labels: Vec<(String, f32)>,
+}
+
+impl ImageScoring {
+    /// A score from the screening model alone, because it fell below the
+    /// threshold and there was nothing to confirm.
+    pub fn screened(score: f32) -> Self {
+        Self {
+            fast: score,
+            score,
+            verified: false,
+            labels: Vec::new(),
+        }
+    }
+
+    /// A compact, language-neutral summary for the detection report.
+    ///
+    /// Deliberately not translated: it is stored in the database with the
+    /// detection and rendered long afterwards, possibly in a different language
+    /// than the group had at the time. Percentages and an arrow read the same
+    /// everywhere.
+    pub fn detail(&self) -> String {
+        let pct = |v: f32| crate::util::text::percent(v);
+
+        if !self.verified {
+            return format!("{}%", pct(self.score));
+        }
+
+        let mut out = format!("{}% → {}%", pct(self.fast), pct(self.score));
+        if let Some((label, value)) = self.labels.first() {
+            out.push_str(&format!(" · {label} {}%", pct(*value)));
+        }
+        out
+    }
 }
 
 /// The channel a user attached to their Telegram profile.
@@ -170,14 +223,14 @@ pub async fn collect(
     }
 }
 
-/// Returns `(photo access, nsfw_score, avatar_text)`.
+/// Returns `(photo access, scoring, avatar_text)`.
 async fn collect_profile(
     app: &Arc<App>,
     bot: &Tg,
     user_id: i64,
     needs: Needs,
     threshold: f32,
-) -> (PhotoAccess, Option<f32>, Option<String>) {
+) -> (PhotoAccess, Option<ImageScoring>, Option<String>) {
     if !needs.profile_photos {
         // Nobody asked, so nothing is known — not "there is no photo".
         return (PhotoAccess::Unknown, None, None);
@@ -195,9 +248,11 @@ async fn collect_profile(
     // A cache hit means the fingerprint matched, so these exact photos have
     // already been scored and nothing needs downloading.
     if let Ok(Some(cached)) = db::scan_cache::get(&app.db, user_id, &photos.fingerprint).await {
+        // The cache stores the authoritative score, already verified when it
+        // was written — there is no second stage to re-run or re-report.
         return (
             PhotoAccess::Visible,
-            Some(cached.nsfw_score),
+            Some(ImageScoring::screened(cached.nsfw_score)),
             cached.ocr_text.filter(|t| !t.is_empty()),
         );
     }
@@ -241,12 +296,12 @@ async fn collect_profile(
         (!joined.trim().is_empty()).then_some(joined)
     };
 
-    if let Some(score) = nsfw {
+    if let Some(scoring) = &nsfw {
         let cache_write = db::scan_cache::put(
             &app.db,
             user_id,
             &photos.fingerprint,
-            score,
+            scoring.score,
             true,
             None,
             avatar_text.as_deref(),
@@ -285,22 +340,36 @@ async fn confirm(
     threshold: f32,
     what: &str,
     user_id: i64,
-) -> Option<f32> {
+) -> Option<ImageScoring> {
     let fast_score = fast?;
 
     // The overwhelming majority of scans stop here, which is what keeps the
     // heavy model affordable.
     if fast_score < threshold {
-        return Some(fast_score);
+        return Some(ImageScoring::screened(fast_score));
     }
 
     match app.detector.verify(images).await {
         Verification::Checked { scores, labels } => {
-            let verified = scores.values().copied().fold(f32::NEG_INFINITY, f32::max);
-            if verified == f32::NEG_INFINITY {
+            // Score and labels must come from the *same* image, so pick the
+            // worst-scoring one and read its breakdown, rather than taking a
+            // max here and an arbitrary label set there.
+            let worst = scores
+                .iter()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .map(|(id, score)| (id.clone(), *score));
+
+            let Some((id, verified)) = worst else {
                 tracing::warn!(user_id, what, "verifier returned no usable score");
                 return None;
-            }
+            };
+
+            let mut top: Vec<(String, f32)> = labels
+                .get(&id)
+                .map(|m| m.iter().map(|(k, v)| (k.clone(), *v)).collect())
+                .unwrap_or_default();
+            top.sort_by(|a, b| b.1.total_cmp(&a.1));
+            top.truncate(3);
 
             // Logged at info because this is the decision an operator will want
             // to inspect when a ban looks wrong — or when one fails to happen.
@@ -309,10 +378,16 @@ async fn confirm(
                 what,
                 fast = fast_score,
                 verified,
-                labels = ?labels.values().next(),
+                labels = ?top,
                 "second-stage verification"
             );
-            Some(verified)
+
+            Some(ImageScoring {
+                fast: fast_score,
+                score: verified,
+                verified: true,
+                labels: top,
+            })
         }
         Verification::Unavailable => {
             tracing::warn!(
@@ -435,7 +510,7 @@ async fn collect_message_media(
     needs: Needs,
     threshold: f32,
     user_id: i64,
-) -> Option<f32> {
+) -> Option<ImageScoring> {
     if !needs.message_media {
         return None;
     }

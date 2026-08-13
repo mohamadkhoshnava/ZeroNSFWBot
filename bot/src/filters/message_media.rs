@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use super::{F_MESSAGE_MEDIA, Filter, FilterOutcome, Needs};
-use crate::{scan::ScanContext, util::text::percent};
+use crate::scan::ScanContext;
 
 /// Fires when the photo, sticker or animation *inside the comment* is NSFW.
 ///
@@ -24,16 +24,18 @@ impl Filter for MessageMedia {
     }
 
     async fn evaluate(&self, ctx: &ScanContext) -> FilterOutcome {
-        let Some(score) = ctx.message_nsfw else {
+        let Some(scoring) = ctx.message_nsfw.as_ref() else {
             return FilterOutcome::unavailable();
         };
 
-        if score >= ctx.threshold() {
-            FilterOutcome::triggered(score, Some(format!("{}%", percent(score))))
+        if scoring.score >= ctx.threshold() {
+            // The detail carries both stages, so the report reads
+            // "88% → 91%" rather than a bare number nobody can sanity-check.
+            FilterOutcome::triggered(scoring.score, Some(scoring.detail()))
         } else {
             FilterOutcome {
                 triggered: false,
-                score,
+                score: scoring.score,
                 detail: None,
                 available: true,
             }

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use super::{F_PROFILE_NSFW, Filter, FilterOutcome, Needs};
-use crate::{scan::ScanContext, util::text::percent};
+use crate::scan::ScanContext;
 
 /// Fires when the model's NSFW probability for the user's profile photos
 /// reaches the group's threshold.
@@ -26,17 +26,20 @@ impl Filter for ProfileNsfw {
     }
 
     async fn evaluate(&self, ctx: &ScanContext) -> FilterOutcome {
-        let Some(score) = ctx.profile_nsfw else {
-            // No photo, or the photo could not be fetched or decoded.
+        let Some(scoring) = ctx.profile_nsfw.as_ref() else {
+            // No photo, the photo could not be fetched or decoded, or it was flagged
+            // and the verifier could not confirm it.
             return FilterOutcome::unavailable();
         };
 
-        if score >= ctx.threshold() {
-            FilterOutcome::triggered(score, Some(format!("{}%", percent(score))))
+        if scoring.score >= ctx.threshold() {
+            // The detail carries both stages, so the report reads
+            // "88% → 91%" rather than a bare number nobody can sanity-check.
+            FilterOutcome::triggered(scoring.score, Some(scoring.detail()))
         } else {
             FilterOutcome {
                 triggered: false,
-                score,
+                score: scoring.score,
                 detail: None,
                 available: true,
             }

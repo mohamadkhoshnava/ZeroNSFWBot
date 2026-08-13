@@ -11,7 +11,7 @@ use zeronsfw_bot::{
     filters::{FilterRegistry, ScanReport},
     i18n::Lang,
     policy::{self, Action, Policy, Verdict},
-    scan::{LinkedChannel, PersonalChannel, PhotoAccess, ScanContext},
+    scan::{ImageScoring, LinkedChannel, PersonalChannel, PhotoAccess, ScanContext},
 };
 
 fn defaults() -> GroupDefaults {
@@ -37,7 +37,7 @@ fn clean_context() -> ScanContext {
         bio: Some("Photographer in Tehran".into()),
         personal_channel: PersonalChannel::Absent,
         photos: PhotoAccess::Visible,
-        profile_nsfw: Some(0.02),
+        profile_nsfw: Some(ImageScoring::screened(0.02)),
         avatar_text: None,
         message_nsfw: None,
         other_group_bans: Some(0),
@@ -69,7 +69,7 @@ async fn an_ordinary_user_is_left_alone() {
 async fn the_classic_spam_profile_is_banned() {
     // NSFW avatar plus a channel to sell — the pattern the bot exists for.
     let mut ctx = clean_context();
-    ctx.profile_nsfw = Some(0.93);
+    ctx.profile_nsfw = Some(ImageScoring::screened(0.93));
     ctx.bio = Some("18+ videos → t.me/hot_channel".into());
 
     let (report, verdict) = run(&ctx).await;
@@ -86,7 +86,7 @@ async fn a_racy_avatar_without_advertising_is_not_banned() {
     // The single most important false positive to avoid under the default
     // policy: a real person whose avatar the model dislikes.
     let mut ctx = clean_context();
-    ctx.profile_nsfw = Some(0.88);
+    ctx.profile_nsfw = Some(ImageScoring::screened(0.88));
 
     let (_, verdict) = run(&ctx).await;
     assert!(!verdict.matched);
@@ -105,7 +105,7 @@ async fn advertising_without_an_nsfw_avatar_is_not_banned() {
 #[tokio::test]
 async fn contact_info_hidden_on_the_avatar_still_counts_as_advertising() {
     let mut ctx = clean_context();
-    ctx.profile_nsfw = Some(0.77);
+    ctx.profile_nsfw = Some(ImageScoring::screened(0.77));
     ctx.bio = Some("hey".into());
     ctx.avatar_text = Some("join @my_hot_channel".into());
 
@@ -122,7 +122,7 @@ async fn contact_info_hidden_on_the_avatar_still_counts_as_advertising() {
 #[tokio::test]
 async fn an_nsfw_profile_advertising_through_its_attached_channel_is_banned() {
     let mut ctx = clean_context();
-    ctx.profile_nsfw = Some(0.91);
+    ctx.profile_nsfw = Some(ImageScoring::screened(0.91));
     // Nothing to find in the bio — that is the whole point.
     ctx.bio = Some("just here for the memes".into());
     ctx.personal_channel = PersonalChannel::Linked(LinkedChannel {
@@ -147,7 +147,7 @@ async fn an_nsfw_profile_advertising_through_its_attached_channel_is_banned() {
 #[tokio::test]
 async fn an_attached_private_channel_counts_too() {
     let mut ctx = clean_context();
-    ctx.profile_nsfw = Some(0.91);
+    ctx.profile_nsfw = Some(ImageScoring::screened(0.91));
     ctx.personal_channel = PersonalChannel::Linked(LinkedChannel {
         title: Some("VIP".into()),
         username: None,
@@ -183,7 +183,7 @@ async fn an_attached_channel_alone_is_not_a_ban() {
 #[tokio::test]
 async fn an_unknown_personal_channel_is_not_a_signal() {
     let mut ctx = clean_context();
-    ctx.profile_nsfw = Some(0.95);
+    ctx.profile_nsfw = Some(ImageScoring::screened(0.95));
     ctx.bio = None;
     ctx.personal_channel = PersonalChannel::Unknown;
 
@@ -237,7 +237,7 @@ async fn a_failed_photo_lookup_is_unknown_not_absent() {
 #[tokio::test]
 async fn an_unreadable_bio_does_not_count_as_a_clean_bio() {
     let mut ctx = clean_context();
-    ctx.profile_nsfw = Some(0.95);
+    ctx.profile_nsfw = Some(ImageScoring::screened(0.95));
     ctx.bio = None;
 
     let (report, verdict) = run(&ctx).await;
@@ -254,7 +254,7 @@ async fn an_unreadable_bio_does_not_count_as_a_clean_bio() {
 async fn the_threshold_is_respected() {
     let mut ctx = clean_context();
     ctx.bio = Some("t.me/channel".into());
-    ctx.profile_nsfw = Some(0.45);
+    ctx.profile_nsfw = Some(ImageScoring::screened(0.45));
 
     // 40% threshold: 0.45 is over the line.
     let (_, verdict) = run(&ctx).await;
@@ -270,7 +270,7 @@ async fn the_threshold_is_respected() {
 async fn nsfw_only_acts_on_the_avatar_alone() {
     let mut ctx = clean_context();
     ctx.settings.policy = Policy::NsfwOnly;
-    ctx.profile_nsfw = Some(0.88);
+    ctx.profile_nsfw = Some(ImageScoring::screened(0.88));
 
     let (_, verdict) = run(&ctx).await;
     assert!(verdict.matched);
@@ -280,7 +280,7 @@ async fn nsfw_only_acts_on_the_avatar_alone() {
 async fn explicit_media_in_the_comment_is_caught() {
     let mut ctx = clean_context();
     ctx.settings.policy = Policy::NsfwOnly;
-    ctx.message_nsfw = Some(0.97);
+    ctx.message_nsfw = Some(ImageScoring::screened(0.97));
 
     let (report, verdict) = run(&ctx).await;
 
@@ -292,7 +292,7 @@ async fn explicit_media_in_the_comment_is_caught() {
 async fn dry_run_detects_but_never_punishes() {
     let mut ctx = clean_context();
     ctx.settings.dry_run = true;
-    ctx.profile_nsfw = Some(0.93);
+    ctx.profile_nsfw = Some(ImageScoring::screened(0.93));
     ctx.bio = Some("t.me/hot".into());
 
     let (_, verdict) = run(&ctx).await;
@@ -343,7 +343,7 @@ async fn custom_policy_requires_every_chosen_filter() {
     ctx.other_group_bans = Some(0);
 
     // Only one of the two required filters fires.
-    ctx.profile_nsfw = Some(0.99);
+    ctx.profile_nsfw = Some(ImageScoring::screened(0.99));
     let (_, verdict) = run(&ctx).await;
     assert!(!verdict.matched);
 
@@ -372,7 +372,7 @@ async fn keyword_policy_catches_text_only_spam() {
 #[tokio::test]
 async fn the_report_lists_the_signals_that_fired() {
     let mut ctx = clean_context();
-    ctx.profile_nsfw = Some(0.93);
+    ctx.profile_nsfw = Some(ImageScoring::screened(0.93));
     ctx.bio = Some("t.me/hot_channel xxx".into());
 
     let (_, verdict) = run(&ctx).await;
@@ -399,4 +399,81 @@ async fn cheap_policies_do_not_request_expensive_data() {
 
     let needs = registry.needs_for(&Policy::NsfwAndContact.relevant_filters(&[]));
     assert!(needs.bio && needs.avatar_text && needs.profile_photos);
+}
+
+// ---------------------------------------------------------------------------
+// Two-stage scoring, as it appears in the detection report.
+// ---------------------------------------------------------------------------
+
+/// The verifier clearing an avatar the fast model flagged. This is the anime
+/// case: the screening model has no `drawings` class and calls it explicit;
+/// the verifier does, and the group's threshold is applied to *its* number.
+#[tokio::test]
+async fn a_verified_score_below_the_threshold_clears_the_account() {
+    let mut ctx = clean_context();
+    ctx.bio = Some("t.me/my_art".into());
+    ctx.profile_nsfw = Some(ImageScoring {
+        fast: 0.88,
+        score: 0.07,
+        verified: true,
+        labels: vec![("drawings".into(), 0.76), ("neutral".into(), 0.14)],
+    });
+
+    let (report, verdict) = run(&ctx).await;
+
+    assert!(
+        !report.triggered("profile_nsfw"),
+        "the verifier said it is a drawing"
+    );
+    assert!(
+        !verdict.matched,
+        "an anime avatar with a link is not a spam profile"
+    );
+}
+
+/// The other direction: both stages agree, so the ban stands.
+#[tokio::test]
+async fn a_verified_score_above_the_threshold_still_bans() {
+    let mut ctx = clean_context();
+    ctx.bio = Some("t.me/hot_channel".into());
+    ctx.profile_nsfw = Some(ImageScoring {
+        fast: 0.88,
+        score: 0.94,
+        verified: true,
+        labels: vec![("porn".into(), 0.91), ("sexy".into(), 0.05)],
+    });
+
+    let (report, verdict) = run(&ctx).await;
+
+    assert!(report.triggered("profile_nsfw"));
+    assert!(verdict.matched);
+    // The report must show the working, not just the final number.
+    let detail = report.get("profile_nsfw").unwrap().detail.clone().unwrap();
+    assert!(
+        detail.contains("88%") && detail.contains("94%"),
+        "detail was {detail:?}"
+    );
+    assert!(
+        detail.contains("porn"),
+        "detail should name the class: {detail:?}"
+    );
+}
+
+#[test]
+fn the_detail_shows_both_stages_and_the_leading_class() {
+    let scoring = ImageScoring {
+        fast: 0.884,
+        score: 0.073,
+        verified: true,
+        labels: vec![("drawings".into(), 0.761), ("neutral".into(), 0.14)],
+    };
+
+    assert_eq!(scoring.detail(), "88% → 7% · drawings 76%");
+}
+
+#[test]
+fn an_unverified_detail_shows_one_number_not_a_misleading_arrow() {
+    // Below the threshold, so no second stage ran. Rendering "6% → 6%" would
+    // imply a confirmation that never happened.
+    assert_eq!(ImageScoring::screened(0.061).detail(), "6%");
 }

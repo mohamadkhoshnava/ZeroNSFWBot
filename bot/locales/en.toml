@@ -51,6 +51,7 @@ marked_wrong = "Marked as a false positive. The user has been unbanned."
 marked_wrong_failed = "Marked as a false positive, but I could not unban them."
 details_title = "🔎 <b>Detection details</b>"
 details_line = "• <code>{filter}</code> — {value}"
+details_two_stage = "Image scores read: screening model → verifier, then its leading class."
 detection_expired = "This detection is no longer available."
 
 # ---------------------------------------------------------------- reasons --

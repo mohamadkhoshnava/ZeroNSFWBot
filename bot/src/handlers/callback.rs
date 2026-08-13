@@ -418,8 +418,20 @@ async fn details(
         .await?
         .map_or(Lang::En, |s| s.lang);
 
+    let reasons = detection.reasons();
+
+    // Only explain the arrow when there is one; on a text-only detection the
+    // legend would be noise.
     let mut text = t!(lang, "details_title");
-    for reason in detection.reasons() {
+    if reasons
+        .iter()
+        .any(|r| r.detail.as_deref().is_some_and(|d| d.contains('→')))
+    {
+        text.push('\n');
+        text.push_str(&t!(lang, "details_two_stage"));
+    }
+
+    for reason in reasons {
         let value = reason
             .detail
             .unwrap_or_else(|| format!("{}%", (reason.score * 100.0).round() as i32));
