@@ -6,6 +6,46 @@ Notable changes to ZeroNSFWBot. Format follows
 
 ## [Unreleased]
 
+### Added — two-stage image scoring
+
+Reported as "the model is too sensitive to anime". It was not a tuning problem.
+The screening model has two classes, `NSFW` and `SFW`; an anime portrait is not
+`SFW`, so it has nowhere to go but `NSFW`. No threshold fixes a model that
+cannot represent the distinction.
+
+Image scoring is now a cascade. `Marqo/nsfw-image-detection-384` (ViT-tiny, 18M)
+still screens every image, and anything it flags is re-scored by
+`giacomoarienti/nsfw-classifier` (ViT-base, 86M) whose classes are `drawings`,
+`hentai`, `neutral`, `porn` and `sexy`. Only `hentai` and `porn` count towards
+the NSFW total, so explicit anime is still caught while ordinary anime is not.
+Only the verified score is acted on.
+
+- Both stages compare against the same per-group threshold, so the second stage
+  can only clear an account the first flagged — never convict on its own.
+- The heavy model runs on the flagged minority, which is what keeps a 5x larger
+  model affordable at all.
+- Message media goes through the same cascade; a shared anime picture is the
+  same false positive, in front of the whole group.
+- **A missing or unreachable verifier yields no image signal at all**, not a
+  fallback to the fast score. Falling back would silently reinstate exactly what
+  this prevents. CI asserts the verifier is loaded and that `drawings` is
+  neither absent from its labels nor counted as explicit — a silently unexported
+  model looks like "no more false positives" and means "no detection at all".
+- Scores are cached with the pipeline version that produced them. The cache key
+  is the photo fingerprint, which detects a changed *photo*, not a changed
+  *scorer*; without the version, every already-scanned account would have kept
+  its single-model verdict forever.
+- The exporter now handles timm and transformers checkpoints, with a layered
+  fallback for preprocessing: this model's `preprocessor_config.json` names
+  `ViTFeatureExtractor`, a class transformers v5 removed, so `AutoImageProcessor`
+  rejects a file whose values are perfectly readable.
+- `HF_HUB_DISABLE_XET=1` — the hub's default transfer path aborts a 350 MB
+  weight download mid-stream on an unreliable link instead of resuming.
+
+Tuning: `VERIFIER_MODEL_ID` picks the model (empty builds without one),
+`ENABLE_VERIFIER=false` turns the stage off, and `scripts/eval_images.sh` now
+prints both columns side by side with the verifier's per-label breakdown.
+
 ### Added
 
 - **`profile_channel` — the channel attached to a profile now counts as
