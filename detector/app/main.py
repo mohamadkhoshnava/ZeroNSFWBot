@@ -196,6 +196,59 @@ async def verify(req: ClassifyRequest) -> VerifyResponse:
     return VerifyResponse(results=results, model_id=_verifier.meta.model_id)
 
 
+@app.post("/frames", response_model=FramesResponse)
+async def extract_frames(req: FramesRequest) -> FramesResponse:
+    """Spread a handful of stills over each animation or clip.
+
+    Scoring one frame of a GIF is scoring a guess: the poster thumbnail
+    Telegram provides is an arbitrary frame, and the explicit part of a spam
+    GIF is very often not at the start. The caller scores every frame returned
+    here and keeps the worst.
+
+    Per-item failures are reported in place — an undecodable clip must not cost
+    the caller the rest of the batch.
+    """
+    if len(req.images) > config.MAX_BATCH:
+        raise HTTPException(status_code=413, detail="batch too large")
+
+    def work() -> list[FramesResult]:
+        out: list[FramesResult] = []
+        for item in req.images:
+            try:
+                sampled = frames.sample(
+                    _decode(item.data, config.MAX_MEDIA_BYTES), req.max_frames
+                )
+            except (ValueError, binascii.Error) as exc:
+                out.append(FramesResult(id=item.id, error=str(exc)))
+                continue
+            except Exception as exc:
+                log.debug("frame extraction failed for %s: %s", item.id, exc)
+                out.append(FramesResult(id=item.id, error=f"extraction failed: {exc}"))
+                continue
+
+            out.append(
+                FramesResult(
+                    id=item.id,
+                    total=sampled.total,
+                    decoder=sampled.decoder,
+                    frames=[
+                        ExtractedFrame(
+                            id=f"{item.id}#{frame.index}",
+                            index=frame.index,
+                            data=base64.b64encode(frame.data).decode("ascii"),
+                        )
+                        for frame in sampled.frames
+                    ],
+                )
+            )
+        return out
+
+    return FramesResponse(
+        results=await run_in_threadpool(work),
+        video_enabled=frames.video_available(),
+    )
+
+
 @app.post("/ocr", response_model=OcrResponse)
 async def run_ocr(req: OcrRequest) -> OcrResponse:
     enabled = ocr.available()

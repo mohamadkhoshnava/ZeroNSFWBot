@@ -18,10 +18,10 @@ welcome_title = "🛡 <b>{bot}</b> is now guarding this group"
 welcome_body = """
 I scan the people who comment here and remove accounts that advertise NSFW content through their profile photo, bio, username or the media they post.
 
-• Auto-detect NSFW advertisers
-• Scan profiles and comments
-• Instant auto-ban
-• Less spam, cleaner community
+• Profile photo, bio, name and attached channel
+• Every flagged image re-checked by a second, stricter model
+• Optional: scan the photos, GIFs, stickers and videos posted here — from every member, with its own threshold and action
+• GIFs and videos sampled across the whole clip, not just the preview frame
 
 Current threshold: <b>{threshold}%</b> · Language: <b>{lang}</b>
 Admins can tune everything with /nsfw."""
@@ -42,7 +42,7 @@ report_muted = "🔇 <b>{user}</b> muted and their comment removed."
 report_muted_kept = "🔇 <b>{user}</b> muted, but I could not remove their comment."
 report_dry_run = "🕶 <b>Test mode</b> — <b>{user}</b> would have been actioned, but nothing was changed."
 report_no_action = "⚠️ Flagged <b>{user}</b>, but I could not act."
-report_score = "NSFW profile probability: <b>{score}%</b>"
+report_score = "NSFW probability: <b>{score}%</b>"
 report_reasons = "Signals: {reasons}"
 report_failed = "\n{problem}"
 btn_mark_wrong = "❌ False positive"
@@ -73,6 +73,7 @@ panel_state = """
 ⚡ Action: <b>{action}</b>
 🕶 Test mode: <b>{dryrun}</b>
 🛡 Grace window: <b>{grace}</b>
+🖼 Media scan: <b>{media}</b>
 🌐 Language: <b>{lang}</b>"""
 panel_btn_threshold = "🎚 Threshold"
 panel_btn_policy = "🧩 Filter mode"
@@ -84,6 +85,7 @@ panel_btn_dryrun = "🕶 Test mode"
 panel_btn_grace = "🛡 Grace window"
 panel_btn_global = "🌍 Shared blocklist"
 panel_btn_autodelete = "🧹 Clean up my messages"
+panel_btn_media = "🖼 Media scan"
 panel_btn_reset = "♻️ Reset to defaults"
 panel_reset_done = "♻️ Settings restored to defaults."
 
@@ -138,6 +140,32 @@ global_title = "🌍 <b>Shared blocklist</b>\n\nWhen enabled, accounts banned fo
 
 autodelete_title = "🧹 <b>Clean up my messages</b>\n\nDelete my own reports from the chat after {ttl} seconds. Off by default so the group can see what I removed."
 
+# ------------------------------------------------------------ media scan --
+media_title = """🖼 <b>Media scan</b> — <b>{state}</b>
+
+Checks the photos, GIFs, stickers and videos posted here, whoever posts them. This is separate from the profile scan: it applies to every member regardless of the grace window, and it judges the picture itself rather than the account behind it.
+
+🎚 Threshold: <b>{threshold}%</b>
+⚡ Action: <b>{action}</b>
+🗂 Covers: <b>{kinds}</b>
+🎞 Frames per clip: <b>{frames}</b>"""
+media_state_on = "on, {threshold}%"
+media_btn_enable = "Scan media posted in this group"
+media_btn_threshold = "🎚 Media threshold"
+media_btn_action = "⚡ Media action"
+media_btn_kinds = "🗂 What to scan"
+media_btn_frames = "🎞 Frames per clip"
+media_threshold_title = "🎚 <b>Media threshold</b> — currently <b>{value}%</b>\n\nHow certain I must be before acting on a posted image. Deliberately separate from the profile threshold ({profile}%), and much higher: a profile is judged on several signals at once, but a picture stands alone, so near-certainty is the right bar. 85–95% suits most groups."
+media_action_title = "⚡ <b>Media action</b> — currently <b>{value}</b>\n\nWhat to do about explicit media. Separate from the profile action ({profile}) on purpose: deleting the picture is proportionate, banning a long-standing member for one post is a bigger decision."
+media_kinds_title = "🗂 <b>What to scan</b>\n\nTap to include or exclude a kind. Videos are the expensive ones — they are downloaded and sampled — so a busy group can leave them out and keep the rest."
+media_kinds_none = "Nothing selected — the media scan is on but will never look at anything. Pick at least one kind."
+media_kinds_empty = "nothing"
+media_kind_photo = "Photos"
+media_kind_animation = "GIFs"
+media_kind_sticker = "Stickers"
+media_kind_video = "Videos"
+media_frames_title = "🎞 <b>Frames per clip</b> — currently <b>{value}</b>\n\nHow many stills I take from across a GIF or video, spread over its whole length. One frame means trusting Telegram's preview image, which is an arbitrary frame — and a clip that opens innocently and turns explicit later is a known trick. More frames catch more, and cost more."
+
 # ------------------------------------------------------------------ stats --
 stats_title = "📊 <b>Statistics for {chat}</b>"
 stats_row = "<b>{period}</b> — detected {detected} · deleted {deleted} · banned {banned}"
@@ -154,13 +182,22 @@ dm_notify_kept = "🛡 <b>{chat}</b>\n\nI actioned <b>{user}</b>, but their comm
 # ----------------------------------------------------------- private chat --
 start_title = "🛡 <b>{bot}</b>"
 start_body = """
-I automatically detect and ban accounts promoting NSFW content through comments, profiles, usernames, bios, avatars or hidden advertising.
+I remove accounts that advertise NSFW content through their profile, bio, username or avatar — and, if you want it, I check the media people post in the group as well.
 
-<b>What I do</b>
-• Auto-detect NSFW advertisers
-• Scan profiles and comments
-• Instant auto-ban
-• Reduce spam and keep communities clean
+<b>Who is posting</b>
+• Profile photos, current and previous, and any text written on them
+• Bio, name, @username and the channel attached to the profile
+• A shared blocklist: accounts already removed for this in other groups
+
+<b>What is posted</b>
+• Photos, GIFs, stickers and videos sent in the group, from every member — not only newcomers
+• GIFs and videos are sampled at several points across their length, so a clip that only turns explicit halfway through is still caught
+• Its own confidence threshold and its own action, both separate from the profile settings, because deleting one picture and banning an account are different decisions
+
+<b>Before I act</b>
+• Anything the fast model flags is re-checked by a second, more precise one, so ordinary art and anime are not mistaken for pornography
+• Each group chooses which categories count as NSFW, how certain I must be, and what I do about it
+• Test mode reports without changing anything, so you can calibrate safely first
 
 Add me to your group, make me an admin, and tune everything with /nsfw."""
 start_global_stats = "So far: <b>{detections}</b> NSFW detections · <b>{bans}</b> accounts banned · <b>{groups}</b> groups protected."
@@ -177,17 +214,24 @@ help_body = """
 When someone comments in a protected group I look at:
 • their profile photo (current and previous)
 • any text written on that photo
-• their bio, name and @username
+• their bio, name, @username and the channel pinned to their profile
 • media inside the comment itself
 • whether they have been banned for the same reason elsewhere
 
 Those signals feed a filter mode chosen by each group's admins, so a group can require an NSFW photo alone, or an NSFW photo <i>plus</i> advertising, before anyone is removed.
 
+<b>Media scan</b>
+
+Separately, and off until you turn it on, I can check the photos, GIFs, stickers and videos posted in the group. That one is about the picture rather than the account: it applies to every member however long they have been around, and it carries its own threshold and its own action — 90% and delete-only by default, against 40% and ban for profiles.
+
+GIFs and videos are not judged by their preview image. I take several stills from across the whole clip, because one that starts innocently and turns explicit later is a known trick.
+
 <b>Setting it up</b>
 1. Add me to the group
 2. Promote me with <b>Delete messages</b> and <b>Ban users</b>
 3. Send /nsfw and pick your threshold and filter mode
-4. Leave test mode on for a week, then switch it off
+4. Turn on 🖼 Media scan if you want posted pictures checked too
+5. Leave test mode on for a week, then switch it off
 
 <b>Privacy</b>
 I only read what Telegram already shows publicly, and I store scores — never your photos."""
@@ -202,6 +246,7 @@ pm_lang_title = "🌐 Choose your language:"
 # ----------------------------------------------------------------- appeal --
 btn_appeal = "🙋 Appeal"
 banned_notice = "🚫 You were removed from <b>{chat}</b> because your profile was flagged as NSFW advertising ({score}%).\n\nIf this is wrong, you can appeal and a group admin will review it."
+banned_notice_media = "🚫 You were removed from <b>{chat}</b> because media you posted was flagged as NSFW ({score}%).\n\nIf this is wrong, you can appeal and a group admin will review it."
 appeal_sent = "✅ Your appeal was sent to the group admins."
 appeal_undeliverable = "Your appeal was recorded, but no admin of that group has enabled private alerts, so nobody was notified. Contact an admin directly."
 appeal_already = "You have already appealed. Please wait for an admin."

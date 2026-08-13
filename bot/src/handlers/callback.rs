@@ -226,6 +226,11 @@ fn affects_detection(action: &CallbackAction) -> bool {
             | ToggleDryRun
             | ToggleGlobal
             | SetGrace(_)
+            | ToggleMediaScan
+            | AdjustMediaThreshold(_)
+            | SetMediaAction(_)
+            | ToggleMediaKind(_)
+            | SetMediaFrames(_)
             | Reset
     )
 }
@@ -323,6 +328,39 @@ async fn apply(
         SetGrace(value) => {
             db::groups::set_grace(&app.db, chat_id, value).await?;
             PanelView::Grace
+        }
+
+        ToggleMediaScan => {
+            db::groups::toggle_flag(&app.db, chat_id, db::groups::BoolColumn::MediaScan).await?;
+            PanelView::Media
+        }
+
+        AdjustMediaThreshold(delta) => {
+            let next = (settings.media_threshold + delta).clamp(0, 100);
+            db::groups::set_media_threshold(&app.db, chat_id, next).await?;
+            PanelView::MediaThreshold
+        }
+
+        SetMediaAction(value) => {
+            db::groups::set_media_action(&app.db, chat_id, value).await?;
+            PanelView::MediaAction
+        }
+
+        ToggleMediaKind(kind) => {
+            let mut kinds = settings.media_kinds.clone();
+            match kinds.iter().position(|k| *k == kind) {
+                Some(index) => {
+                    kinds.remove(index);
+                }
+                None => kinds.push(kind),
+            }
+            db::groups::set_media_kinds(&app.db, chat_id, &kinds).await?;
+            PanelView::MediaKinds
+        }
+
+        SetMediaFrames(value) => {
+            db::groups::set_media_frames(&app.db, chat_id, value).await?;
+            PanelView::MediaFrames
         }
 
         Reset => {

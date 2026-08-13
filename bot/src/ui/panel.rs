@@ -11,7 +11,10 @@ use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
 use super::callbacks::{CallbackAction, PanelView};
 use crate::{
     App,
-    db::{self, models::GroupSettings},
+    db::{
+        self,
+        models::{GroupSettings, MediaKind},
+    },
     filters::ALL_FILTERS,
     i18n::Lang,
     policy::{Action, Policy},
@@ -44,6 +47,17 @@ fn on_off(lang: Lang, value: bool) -> String {
 /// before it is pressed.
 fn checkbox(selected: bool, label: String) -> String {
     format!("{} {label}", if selected { "✅" } else { "⬜️" })
+}
+
+/// The media scan in one line: off, or on with the number that governs it.
+///
+/// The threshold is on the summary because it is the setting most likely to be
+/// confused with the profile one directly above it.
+fn media_label(lang: Lang, settings: &GroupSettings) -> String {
+    if !settings.media_scan {
+        return t!(lang, "state_off");
+    }
+    t!(lang, "media_state_on", threshold = settings.media_threshold)
 }
 
 fn grace_label(lang: Lang, grace: i32) -> String {
@@ -99,6 +113,11 @@ pub async fn render(
             settings.delete_bot_messages,
             CallbackAction::ToggleAutoDelete,
         ),
+        PanelView::Media => media(settings, lang),
+        PanelView::MediaKinds => media_kinds(settings, lang),
+        PanelView::MediaThreshold => media_threshold(settings, lang),
+        PanelView::MediaAction => media_action(settings, lang),
+        PanelView::MediaFrames => media_frames(settings, lang),
     }
 }
 
@@ -119,11 +138,19 @@ fn main(app: &Arc<App>, settings: &GroupSettings, lang: Lang) -> Screen {
             action = t!(lang, settings.action.label_key()),
             dryrun = on_off(lang, settings.dry_run),
             grace = grace_label(lang, settings.grace_messages),
+            media = media_label(lang, settings),
             lang = settings.lang.native_name(),
         ),
     );
 
-    let keyboard = InlineKeyboardMarkup::new(vec![
+    let keyboard = main_keyboard(lang);
+
+    Screen { text, keyboard }
+}
+
+/// The root keyboard, separated so a test can walk it without an [`App`].
+fn main_keyboard(lang: Lang) -> InlineKeyboardMarkup {
+    InlineKeyboardMarkup::new(vec![
         vec![
             button(
                 t!(lang, "panel_btn_threshold"),
@@ -140,34 +167,44 @@ fn main(app: &Arc<App>, settings: &GroupSettings, lang: Lang) -> Screen {
                 CallbackAction::Panel(PanelView::Action),
             ),
             button(
-                t!(lang, "panel_btn_dryrun"),
-                CallbackAction::Panel(PanelView::DryRun),
+                t!(lang, "panel_btn_categories"),
+                CallbackAction::Panel(PanelView::Categories),
             ),
         ],
         vec![
+            button(
+                t!(lang, "panel_btn_dryrun"),
+                CallbackAction::Panel(PanelView::DryRun),
+            ),
             button(
                 t!(lang, "panel_btn_grace"),
                 CallbackAction::Panel(PanelView::Grace),
             ),
+        ],
+        vec![
             button(
                 t!(lang, "panel_btn_global"),
                 CallbackAction::Panel(PanelView::Global),
             ),
-        ],
-        vec![
             button(
                 t!(lang, "panel_btn_notify"),
                 CallbackAction::Panel(PanelView::Notify),
             ),
+        ],
+        vec![
             button(
                 t!(lang, "panel_btn_autodelete"),
                 CallbackAction::Panel(PanelView::AutoDelete),
             ),
-        ],
-        vec![
             button(
                 t!(lang, "panel_btn_stats"),
                 CallbackAction::Panel(PanelView::Stats),
+            ),
+        ],
+        vec![
+            button(
+                t!(lang, "panel_btn_media"),
+                CallbackAction::Panel(PanelView::Media),
             ),
             button(
                 t!(lang, "panel_btn_lang"),
@@ -178,9 +215,7 @@ fn main(app: &Arc<App>, settings: &GroupSettings, lang: Lang) -> Screen {
             button(t!(lang, "panel_btn_reset"), CallbackAction::Reset),
             button(t!(lang, "btn_close"), CallbackAction::Close),
         ],
-    ]);
-
-    Screen { text, keyboard }
+    ])
 }
 
 fn threshold(settings: &GroupSettings, lang: Lang) -> Screen {
@@ -471,6 +506,193 @@ fn grace(settings: &GroupSettings, lang: Lang) -> Screen {
     }
 }
 
+// --------------------------------------------------------- group media scan --
+
+/// The hub for scanning what people post, as opposed to who they are.
+///
+/// Its own screen rather than a row in the main panel because it is a genuinely
+/// separate mechanism with its own threshold, action and scope, and folding it
+/// into the profile settings is exactly the confusion that would lead an admin
+/// to set one number and expect it to govern the other.
+fn media(settings: &GroupSettings, lang: Lang) -> Screen {
+    let mut text = t!(
+        lang,
+        "media_title",
+        state = on_off(lang, settings.media_scan),
+        threshold = settings.media_threshold,
+        action = t!(lang, settings.media_action.label_key()),
+        kinds = kinds_summary(settings, lang),
+        frames = settings.media_frames,
+    );
+
+    // An enabled scan covering nothing is a switch that does nothing, and the
+    // panel should say so rather than let an admin believe they are protected.
+    if settings.media_scan && settings.media_kinds.is_empty() {
+        text.push_str("\n\n⚠️ ");
+        text.push_str(&t!(lang, "media_kinds_none"));
+    }
+
+    let mut rows = vec![vec![button(
+        checkbox(settings.media_scan, t!(lang, "media_btn_enable")),
+        CallbackAction::ToggleMediaScan,
+    )]];
+
+    // The rest only matter once it is on; showing them beforehand invites
+    // tuning a threshold that is not in force.
+    if settings.media_scan {
+        rows.push(vec![
+            button(
+                t!(lang, "media_btn_threshold"),
+                CallbackAction::Panel(PanelView::MediaThreshold),
+            ),
+            button(
+                t!(lang, "media_btn_action"),
+                CallbackAction::Panel(PanelView::MediaAction),
+            ),
+        ]);
+        rows.push(vec![
+            button(
+                t!(lang, "media_btn_kinds"),
+                CallbackAction::Panel(PanelView::MediaKinds),
+            ),
+            button(
+                t!(lang, "media_btn_frames"),
+                CallbackAction::Panel(PanelView::MediaFrames),
+            ),
+        ]);
+    }
+
+    rows.push(back_row(lang));
+    Screen {
+        text,
+        keyboard: InlineKeyboardMarkup::new(rows),
+    }
+}
+
+/// The enabled kinds as a short list, or "none".
+fn kinds_summary(settings: &GroupSettings, lang: Lang) -> String {
+    if settings.media_kinds.is_empty() {
+        return t!(lang, "media_kinds_empty");
+    }
+
+    // Iterated over ALL rather than over the stored list so the order is fixed
+    // and does not shuffle as an admin toggles things.
+    MediaKind::ALL
+        .iter()
+        .filter(|kind| settings.media_kinds.contains(kind))
+        .map(|kind| t!(lang, kind.label_key()))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+fn media_threshold(settings: &GroupSettings, lang: Lang) -> Screen {
+    let steps = vec![
+        button("−10".to_owned(), CallbackAction::AdjustMediaThreshold(-10)),
+        button("−5".to_owned(), CallbackAction::AdjustMediaThreshold(-5)),
+        button(
+            format!("{}%", settings.media_threshold),
+            CallbackAction::Panel(PanelView::MediaThreshold),
+        ),
+        button("+5".to_owned(), CallbackAction::AdjustMediaThreshold(5)),
+        button("+10".to_owned(), CallbackAction::AdjustMediaThreshold(10)),
+    ];
+
+    Screen {
+        text: t!(
+            lang,
+            "media_threshold_title",
+            value = settings.media_threshold,
+            profile = settings.threshold,
+        ),
+        keyboard: InlineKeyboardMarkup::new(vec![steps, media_back_row(lang)]),
+    }
+}
+
+fn media_action(settings: &GroupSettings, lang: Lang) -> Screen {
+    let rows: Vec<Vec<InlineKeyboardButton>> = Action::ALL
+        .iter()
+        .map(|option| {
+            vec![button(
+                checkbox(
+                    *option == settings.media_action,
+                    t!(lang, option.label_key()),
+                ),
+                CallbackAction::SetMediaAction(*option),
+            )]
+        })
+        .chain(std::iter::once(media_back_row(lang)))
+        .collect();
+
+    Screen {
+        text: t!(
+            lang,
+            "media_action_title",
+            value = t!(lang, settings.media_action.label_key()),
+            profile = t!(lang, settings.action.label_key()),
+        ),
+        keyboard: InlineKeyboardMarkup::new(rows),
+    }
+}
+
+fn media_kinds(settings: &GroupSettings, lang: Lang) -> Screen {
+    let mut text = t!(lang, "media_kinds_title");
+    if settings.media_kinds.is_empty() {
+        text.push_str("\n\n⚠️ ");
+        text.push_str(&t!(lang, "media_kinds_none"));
+    }
+
+    let mut rows: Vec<Vec<InlineKeyboardButton>> = MediaKind::ALL
+        .iter()
+        .map(|kind| {
+            vec![button(
+                checkbox(
+                    settings.media_kinds.contains(kind),
+                    t!(lang, kind.label_key()),
+                ),
+                CallbackAction::ToggleMediaKind(*kind),
+            )]
+        })
+        .collect();
+
+    rows.push(media_back_row(lang));
+    Screen {
+        text,
+        keyboard: InlineKeyboardMarkup::new(rows),
+    }
+}
+
+fn media_frames(settings: &GroupSettings, lang: Lang) -> Screen {
+    // 1 is offered deliberately: it is the old thumbnail-only behaviour, and a
+    // group on a small server may want exactly that.
+    let options: [i16; 4] = [1, 3, 5, 9];
+    let row: Vec<InlineKeyboardButton> = options
+        .iter()
+        .map(|n| {
+            button(
+                checkbox(*n == settings.media_frames, n.to_string()),
+                CallbackAction::SetMediaFrames(*n),
+            )
+        })
+        .collect();
+
+    Screen {
+        text: t!(lang, "media_frames_title", value = settings.media_frames),
+        keyboard: InlineKeyboardMarkup::new(vec![row, media_back_row(lang)]),
+    }
+}
+
+/// Back to the media hub rather than the main panel: these are its sub-screens,
+/// and landing on the main menu would lose the admin's place.
+fn media_back_row(lang: Lang) -> Vec<InlineKeyboardButton> {
+    vec![
+        button(
+            t!(lang, "btn_back"),
+            CallbackAction::Panel(PanelView::Media),
+        ),
+        button(t!(lang, "btn_close"), CallbackAction::Close),
+    ]
+}
+
 fn simple_toggle(lang: Lang, text: String, enabled: bool, action: CallbackAction) -> Screen {
     Screen {
         text,
@@ -478,5 +700,68 @@ fn simple_toggle(lang: Lang, text: String, enabled: bool, action: CallbackAction
             vec![button(checkbox(enabled, on_off(lang, enabled)), action)],
             back_row(lang),
         ]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every settings screen must be reachable from the main panel.
+    ///
+    /// The categories screen shipped once with its renderer, its callback and
+    /// its translations all correct — and no button, because a text edit to the
+    /// keyboard silently failed to apply. Nothing caught it: the code compiled,
+    /// the tests passed, and the feature was simply invisible.
+    ///
+    /// This walks the real keyboard rather than a list maintained by hand, so a
+    /// new screen that nobody linked to fails here.
+    #[test]
+    fn every_panel_view_is_reachable_from_the_main_screen() {
+        // Screens reached from inside another screen rather than the root.
+        const NESTED: &[PanelView] = &[
+            PanelView::Main,
+            // Opened from the Policy screen, once `custom` is selected.
+            PanelView::Custom,
+        ];
+
+        let reachable = main_screen_targets();
+
+        for view in PanelView::ALL {
+            if NESTED.contains(&view) {
+                continue;
+            }
+            assert!(
+                reachable.contains(&view),
+                "{view:?} has no button on the main panel — it is unreachable"
+            );
+        }
+    }
+
+    /// Decode the main keyboard back into the views it links to.
+    ///
+    /// Going through the encoded callback data is deliberate: it exercises the
+    /// same round trip Telegram performs, so a button wired to a payload that
+    /// does not decode fails here too.
+    fn main_screen_targets() -> Vec<PanelView> {
+        keyboard_targets(&main_keyboard(Lang::En))
+    }
+
+    fn keyboard_targets(keyboard: &InlineKeyboardMarkup) -> Vec<PanelView> {
+        keyboard
+            .inline_keyboard
+            .iter()
+            .flatten()
+            .filter_map(|b| match &b.kind {
+                teloxide::types::InlineKeyboardButtonKind::CallbackData(data) => {
+                    match CallbackAction::decode(data) {
+                        Some(CallbackAction::Panel(view)) => Some(view),
+                        Some(_) => None,
+                        None => panic!("button {:?} carries undecodable callback data", b.text),
+                    }
+                }
+                _ => None,
+            })
+            .collect()
     }
 }

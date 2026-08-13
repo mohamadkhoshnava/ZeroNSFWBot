@@ -12,6 +12,7 @@ pub mod enforcement;
 pub mod filters;
 pub mod handlers;
 pub mod i18n;
+pub mod media;
 pub mod policy;
 pub mod scan;
 pub mod ui;
@@ -47,6 +48,12 @@ pub type Tg = DefaultParseMode<Throttle<Bot>>;
 /// enough that swapping to an NSFW avatar is caught within minutes.
 const CLEAN_USER_TTL: Duration = Duration::from_secs(15 * 60);
 
+/// How long a scored piece of media is remembered.
+///
+/// Long, because unlike a user an image cannot change: `file_unique_id`
+/// identifies exact bytes. The ceiling is memory, not staleness.
+const MEDIA_SCORE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+
 /// Shared, immutable-after-startup application state.
 pub struct App {
     pub cfg: Config,
@@ -58,6 +65,12 @@ pub struct App {
     pub test_limiter: RateLimiter,
     /// `(chat_id, user_id)` pairs that scanned clean recently.
     pub recent_clean: Cache<(i64, i64), ()>,
+    /// Scores for media already seen, keyed by Telegram's `file_unique_id`.
+    ///
+    /// Bounded by content rather than by user: the same sticker, meme and GIF
+    /// circulate endlessly, and that id is stable forever, so a popular sticker
+    /// is downloaded and scored once instead of on every post.
+    pub media_scores: Cache<String, crate::scan::ImageScoring>,
     pub broadcasts: BroadcastRegistry,
     pub bot_id: i64,
     pub started_at: DateTime<Utc>,
@@ -96,6 +109,10 @@ impl App {
                 // tuning the threshold takes effect on the next message
                 // instead of up to CLEAN_USER_TTL later.
                 .support_invalidation_closures()
+                .build(),
+            media_scores: Cache::builder()
+                .time_to_live(MEDIA_SCORE_TTL)
+                .max_capacity(50_000)
                 .build(),
             broadcasts: BroadcastRegistry::new(),
             filters: FilterRegistry::with_defaults(),

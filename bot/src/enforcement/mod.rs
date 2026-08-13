@@ -400,9 +400,19 @@ async fn notify_offender(
     }
 
     let lang = db::users::lang_for_group_notice(&app.db, ctx.user_id, settings.lang).await;
+
+    // Telling someone their *profile* was flagged when what happened is that
+    // their GIF was would send them to change their avatar over nothing, and
+    // makes the appeal harder to argue.
+    let key = if verdict.reasons == [crate::filters::F_MESSAGE_MEDIA] {
+        "banned_notice_media"
+    } else {
+        "banned_notice"
+    };
+
     let text = t!(
         lang,
-        "banned_notice",
+        key,
         chat = escape_html(settings.title.as_deref().unwrap_or("—")),
         score = percent(verdict.score),
     );

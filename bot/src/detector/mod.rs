@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// The bot passes Telegram's `file_unique_id`, which is stable for the lifetime
 /// of a photo, so results can be matched up (and cached) without hashing bytes.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ImageItem {
     pub id: String,
     pub data: String,
@@ -23,6 +23,15 @@ impl ImageItem {
         Self {
             id: id.into(),
             data: B64.encode(bytes),
+        }
+    }
+
+    /// Wrap bytes the detector already handed back base64-encoded, such as a
+    /// sampled frame. Decoding them only to re-encode them would be pure waste.
+    pub fn encoded(id: impl Into<String>, data: String) -> Self {
+        Self {
+            id: id.into(),
+            data,
         }
     }
 }
@@ -83,6 +92,50 @@ pub enum Verification {
     Unavailable,
 }
 
+#[derive(Debug, Serialize)]
+struct FramesRequest<'a> {
+    images: &'a [ImageItem],
+    max_frames: u32,
+}
+
+/// One sampled still. The response also carries the frame's position in the
+/// source, which is deliberately not read: the id already encodes it, and the
+/// two decoders number frames differently enough that reporting the raw index
+/// would mean one thing for a GIF and another for an MP4.
+#[derive(Debug, Clone, Deserialize)]
+struct ExtractedFrame {
+    id: String,
+    data: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct FramesResult {
+    id: String,
+    #[serde(default)]
+    frames: Vec<ExtractedFrame>,
+    #[serde(default)]
+    total: u32,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FramesResponse {
+    results: Vec<FramesResult>,
+    #[serde(default = "default_true")]
+    video_enabled: bool,
+}
+
+/// Stills sampled out of one animation or clip, ready to classify.
+#[derive(Debug, Clone)]
+pub struct Frames {
+    /// The frames themselves, in source order. Each keeps its own id, so a
+    /// score can be traced back to the position it came from.
+    pub images: Vec<ImageItem>,
+    /// Frames in the source, as far as the decoder could tell.
+    pub total: u32,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct OcrResult {
     pub id: String,
@@ -119,6 +172,10 @@ pub struct Health {
     pub status: String,
     pub model_loaded: bool,
     pub ocr_enabled: bool,
+    /// Whether the detector can decode real video containers. False on a build
+    /// without ffmpeg, where a GIF-as-MP4 can only be judged by its thumbnail.
+    #[serde(default)]
+    pub video_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -234,6 +291,62 @@ impl DetectorClient {
         }
 
         Verification::Checked { scores, labels }
+    }
+
+    /// Sample stills out of one animation or clip, ready to classify.
+    ///
+    /// Scoring a single frame is scoring a guess: Telegram's poster thumbnail
+    /// is an arbitrary frame, and the explicit part of a spam GIF is very often
+    /// not the opening one. The caller scores everything returned here and
+    /// keeps the worst.
+    ///
+    /// `Ok(None)` means the detector answered but could not decode this file —
+    /// a video on a build without ffmpeg, say. That is a real answer and the
+    /// caller falls back to the thumbnail; an `Err` is a transport failure.
+    pub async fn frames(&self, media: &ImageItem, max_frames: u32) -> Result<Option<Frames>> {
+        let items = std::slice::from_ref(media);
+
+        let response: FramesResponse = self
+            .http
+            .post(format!("{}/frames", self.base_url))
+            .json(&FramesRequest {
+                images: items,
+                max_frames,
+            })
+            .send()
+            .await
+            .context("detector /frames request failed")?
+            .error_for_status()
+            .context("detector /frames returned an error status")?
+            .json()
+            .await
+            .context("detector /frames returned an unexpected body")?;
+
+        let Some(result) = response.results.into_iter().next() else {
+            return Ok(None);
+        };
+
+        if let Some(err) = &result.error {
+            tracing::debug!(
+                id = %result.id,
+                %err,
+                video_enabled = response.video_enabled,
+                "detector could not sample frames"
+            );
+            return Ok(None);
+        }
+        if result.frames.is_empty() {
+            return Ok(None);
+        }
+
+        let total = result.total.max(result.frames.len() as u32);
+        let images = result
+            .frames
+            .into_iter()
+            .map(|frame| ImageItem::encoded(frame.id, frame.data))
+            .collect();
+
+        Ok(Some(Frames { images, total }))
     }
 
     /// Read any text burned into the images. Returns `id -> text`.

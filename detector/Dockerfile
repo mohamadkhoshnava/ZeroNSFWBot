@@ -40,6 +40,11 @@ RUN if [ -n "${VERIFIER_MODEL_ID}" ]; then \
 FROM python:3.12-slim AS runtime
 
 ARG ENABLE_OCR=true
+# ffmpeg, for sampling frames out of GIFs-as-MP4 and video stickers. Telegram
+# re-encodes every uploaded GIF to MP4, so without it /frames can only handle
+# true GIF/WebP/APNG bytes and the bot falls back to the poster thumbnail —
+# which is one arbitrary frame of the clip. Costs ~150 MB; set false to skip.
+ARG ENABLE_VIDEO=true
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_RETRIES=10 \
     PIP_TIMEOUT=60 \
@@ -47,25 +52,32 @@ ENV PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     MODEL_DIR=/models
 
-# tesseract + the language packs the bot's four locales need. Skipped entirely
-# when ENABLE_OCR=false to keep the image ~100 MB smaller.
+# tesseract + the language packs the bot's four locales need, and ffmpeg. Both
+# are optional and skipped entirely when their flag is false, which is what
+# keeps a stripped build small.
 #
-# The retry loop is not paranoia: this pulls ~40 MB of language data, and over a
-# VPN or a throttled link apt reliably gets a truncated response part-way
-# through. Without it a transient drop fails the whole build.
-RUN if [ "${ENABLE_OCR}" = "true" ]; then \
+# The retry loop is not paranoia: this pulls tens of MB, and over a VPN or a
+# throttled link apt reliably gets a truncated response part-way through.
+# Without it a transient drop fails the whole build.
+RUN set -eu; \
+    packages=""; \
+    if [ "${ENABLE_OCR}" = "true" ]; then \
+      packages="tesseract-ocr tesseract-ocr-eng tesseract-ocr-fas tesseract-ocr-ara tesseract-ocr-rus"; \
+    fi; \
+    if [ "${ENABLE_VIDEO}" = "true" ]; then \
+      packages="${packages} ffmpeg"; \
+    fi; \
+    if [ -n "${packages}" ]; then \
       printf 'Acquire::Retries "10";\nAcquire::http::Timeout "60";\nAcquire::https::Timeout "60";\n' \
-        > /etc/apt/apt.conf.d/99-retries \
-      && for attempt in 1 2 3 4 5; do \
-           apt-get update -qq \
-           && apt-get install -y --no-install-recommends --fix-missing \
-                tesseract-ocr tesseract-ocr-eng tesseract-ocr-fas \
-                tesseract-ocr-ara tesseract-ocr-rus \
-           && break; \
-           echo "apt attempt ${attempt} failed, retrying"; sleep 10; \
-         done \
-      && dpkg -s tesseract-ocr > /dev/null \
-      && rm -rf /var/lib/apt/lists/*; \
+        > /etc/apt/apt.conf.d/99-retries; \
+      for attempt in 1 2 3 4 5; do \
+        apt-get update -qq \
+        && apt-get install -y --no-install-recommends --fix-missing ${packages} \
+        && break; \
+        echo "apt attempt ${attempt} failed, retrying"; sleep 10; \
+      done; \
+      for pkg in ${packages}; do dpkg -s "${pkg}" > /dev/null; done; \
+      rm -rf /var/lib/apt/lists/*; \
     fi
 
 WORKDIR /app

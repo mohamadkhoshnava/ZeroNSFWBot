@@ -32,6 +32,10 @@ pub struct Config {
     pub detector_url: String,
     pub detector_timeout: Duration,
     pub enable_ocr: bool,
+    /// Largest clip the bot will download to sample frames from. Anything
+    /// bigger falls back to Telegram's thumbnail — one arbitrary frame, but
+    /// free. 20 MB is also the ceiling `getFile` will serve.
+    pub media_max_bytes: u32,
 
     pub defaults: GroupDefaults,
 
@@ -56,6 +60,17 @@ pub struct GroupDefaults {
     pub grace_messages: i32,
     pub delete_bot_messages: bool,
     pub bot_message_ttl_secs: i32,
+
+    /// Whether new groups start with the group media scan on. Off: it looks at
+    /// every member's every picture, which is a decision an admin should make
+    /// rather than inherit.
+    pub media_scan: bool,
+    /// Percent, 0-100. Much higher than `threshold` by design — see
+    /// `migrations/0004_group_media_scan.sql`.
+    pub media_threshold: i16,
+    pub media_action: Action,
+    /// Stills sampled per animation or clip.
+    pub media_frames: i16,
 }
 
 impl Config {
@@ -90,6 +105,11 @@ impl Config {
             bail!("DEFAULT_THRESHOLD must be between 0 and 100, got {threshold}");
         }
 
+        let media_threshold = num("DEFAULT_MEDIA_THRESHOLD", 90_i16)?;
+        if !(0..=100).contains(&media_threshold) {
+            bail!("DEFAULT_MEDIA_THRESHOLD must be between 0 and 100, got {media_threshold}");
+        }
+
         Ok(Self {
             bot_username: req("BOT_USERNAME")?.trim_start_matches('@').to_owned(),
             bot_name: opt("BOT_NAME").unwrap_or_else(|| "NSFW Guard".to_owned()),
@@ -113,6 +133,7 @@ impl Config {
                 .to_owned(),
             detector_timeout: Duration::from_secs(num("DETECTOR_TIMEOUT_SECS", 20)?),
             enable_ocr: flag("ENABLE_OCR", true),
+            media_max_bytes: num::<u32>("MEDIA_MAX_DOWNLOAD_BYTES", 20 * 1024 * 1024)?,
 
             defaults: GroupDefaults {
                 lang: parsed("DEFAULT_LANG", Lang::En)?,
@@ -124,6 +145,11 @@ impl Config {
                 grace_messages: num("DEFAULT_GRACE_MESSAGES", 5)?,
                 delete_bot_messages: flag("DEFAULT_AUTO_DELETE_BOT_MESSAGES", false),
                 bot_message_ttl_secs: num("DEFAULT_BOT_MESSAGE_TTL_SECS", 60)?,
+                media_scan: flag("DEFAULT_MEDIA_SCAN", false),
+                media_threshold,
+                media_action: parsed("DEFAULT_MEDIA_ACTION", Action::Delete)?,
+                media_frames: num::<i16>("DEFAULT_MEDIA_FRAMES", 5)?
+                    .clamp(1, crate::db::models::MAX_MEDIA_FRAMES),
             },
 
             scan_cache_ttl: Duration::from_secs(num("SCAN_CACHE_TTL_SECS", 86_400)?),

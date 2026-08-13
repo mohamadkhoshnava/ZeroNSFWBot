@@ -6,6 +6,68 @@ Notable changes to ZeroNSFWBot. Format follows
 
 ## [Unreleased]
 
+### Added — scanning the media posted in a group
+
+Until now the bot only ever looked at a picture as evidence *about an account*.
+`message_media` runs inside the profile scan, which means it inherits the grace
+window, the clean-user cache and the profile threshold: a member past their
+first few messages could post anything at all and never be looked at.
+
+The group media scan is a separate section, off until an admin turns it on under
+`/nsfw → 🖼 Media scan`, and it asks a different question — "is this picture
+pornography?" rather than "is this account a spam profile?". Everything about it
+follows from that:
+
+- **It applies to everyone.** No grace window, no clean-user cache. An account's
+  nature does not change between messages, so skipping a known-clean account is
+  sound; a picture is not an account.
+- **Its own threshold, defaulting to 90%** against the profile scan's 40%. That
+  bar is right for one signal weighed against a bio, an avatar and a pinned
+  channel, and reckless for deleting a long-standing member's photo on a model's
+  opinion alone. Moving one threshold never moves the other.
+- **Its own action, defaulting to delete-only** rather than the profile scan's
+  ban. Removing an explicit picture is proportionate; banning the member who
+  posted it is a separate decision, so it is a separate setting.
+- **Per-kind switches** for photos, GIFs, stickers and videos, because their
+  costs are nothing alike and a busy group may want stickers checked but not
+  every forwarded clip.
+
+**GIFs and videos are sampled, not thumbnailed.** Telegram re-encodes uploaded
+GIFs to soundless MP4 and serves a poster thumbnail from an arbitrary frame, so
+scoring that thumbnail scores a guess — and a clip that opens on a cat and ends
+on pornography is a technique, not a hypothesis. The detector grew a `/frames`
+endpoint that reduces a clip to stills spread across its whole length (Pillow
+for GIF/WebP/APNG, ffmpeg for MP4/WebM); the bot scores every frame, keeps the
+worst, and the detection detail names the frame it acted on:
+`91% → 94% · porn 93% · frame 4/5`.
+
+Three details that would otherwise bite:
+
+- **One download, one score, two consumers.** When both passes want the same
+  attachment, it is fetched once and verified at the *lower* of the two
+  thresholds, so a score either pass would act on has always been through the
+  second stage. Verifying at the media threshold alone would have handed the
+  profile filter an unverified score to act on — reinstating the anime false
+  positives the cascade exists to prevent.
+- **A cached score is only reused when it can answer the question asked.** The
+  cache is keyed by `file_unique_id` and shared across groups, so a *verified*
+  entry serves anyone. An unverified one is only the screening model's opinion,
+  kept because it fell below the bar in force when it was cached; a group with a
+  lower bar treats it as a miss rather than acting on the fast score.
+- **A clip that cannot be decoded is reported, not guessed at.** On a build
+  without ffmpeg, `/frames` says `video_enabled: false` and the bot falls back to
+  the thumbnail, rather than silently passing off one frame as a full check.
+
+The ban notice sent to a removed user now says whether it was their profile or
+their media that was flagged, and `report_score` no longer says "NSFW *profile*
+probability" on a detection that had nothing to do with a profile.
+
+Tuning: `DEFAULT_MEDIA_SCAN`, `DEFAULT_MEDIA_THRESHOLD`, `DEFAULT_MEDIA_ACTION`,
+`DEFAULT_MEDIA_FRAMES` seed new groups; `MEDIA_MAX_DOWNLOAD_BYTES` caps what is
+fetched whole; `ENABLE_VIDEO=false` builds a detector image without ffmpeg
+(~150 MB smaller) and `DETECTOR_MAX_FRAMES` is the hard ceiling on frames per
+clip whatever a group asks for.
+
 ### Added — two-stage image scoring
 
 Reported as "the model is too sensitive to anime". It was not a tuning problem.

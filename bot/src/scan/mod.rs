@@ -84,6 +84,22 @@ pub struct ImageScoring {
     /// The verifier's leading labels, strongest first. This is what shows an
     /// admin *why* — `drawings 76%` explains a cleared avatar at a glance.
     pub labels: Vec<(String, f32)>,
+    /// Where in a clip this score came from, when the image was one frame of
+    /// several. Absent for an ordinary still.
+    pub sampled: Option<Sampled>,
+}
+
+/// Which frame of a sampled clip produced the score.
+///
+/// Worth reporting: "frame 4 of 5" tells an admin the GIF really was checked
+/// through to the end, and that the part which triggered the ban is not the one
+/// they see in the chat's preview.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sampled {
+    /// 1-based position among the frames scored.
+    pub frame: u32,
+    /// How many were scored.
+    pub of: u32,
 }
 
 impl ImageScoring {
@@ -95,7 +111,14 @@ impl ImageScoring {
             score,
             verified: false,
             labels: Vec::new(),
+            sampled: None,
         }
+    }
+
+    /// Note which frame of a clip this score came from.
+    pub fn from_frame(mut self, frame: u32, of: u32) -> Self {
+        self.sampled = Some(Sampled { frame, of });
+        self
     }
 
     /// A verified score, derived from the classes *this group* counts.
@@ -115,6 +138,7 @@ impl ImageScoring {
             score,
             verified: true,
             labels,
+            sampled: None,
         }
     }
 
@@ -127,13 +151,18 @@ impl ImageScoring {
     pub fn detail(&self) -> String {
         let pct = |v: f32| crate::util::text::percent(v);
 
-        if !self.verified {
-            return format!("{}%", pct(self.score));
-        }
+        let mut out = if self.verified {
+            let mut out = format!("{}% → {}%", pct(self.fast), pct(self.score));
+            if let Some((label, value)) = self.labels.first() {
+                out.push_str(&format!(" · {label} {}%", pct(*value)));
+            }
+            out
+        } else {
+            format!("{}%", pct(self.score))
+        };
 
-        let mut out = format!("{}% → {}%", pct(self.fast), pct(self.score));
-        if let Some((label, value)) = self.labels.first() {
-            out.push_str(&format!(" · {label} {}%", pct(*value)));
+        if let Some(sampled) = self.sampled {
+            out.push_str(&format!(" · frame {}/{}", sampled.frame, sampled.of));
         }
         out
     }
@@ -180,6 +209,37 @@ impl LinkedChannel {
 }
 
 impl ScanContext {
+    /// A context for a detection that rests on the message's media alone.
+    ///
+    /// The group media scan never looks the account up — that is the point of
+    /// it, and why it can run on everyone rather than just newcomers — so every
+    /// profile signal here is `Unknown` rather than absent. Nothing may read
+    /// this as "the bio was clean" or "there is no avatar", because nobody
+    /// asked either question.
+    pub fn media_only(
+        user_id: i64,
+        display_name: String,
+        username: Option<String>,
+        settings: GroupSettings,
+        message_nsfw: ImageScoring,
+        reputation_min_bans: i64,
+    ) -> Self {
+        Self {
+            user_id,
+            display_name,
+            username,
+            bio: None,
+            personal_channel: PersonalChannel::Unknown,
+            photos: PhotoAccess::Unknown,
+            profile_nsfw: None,
+            avatar_text: None,
+            message_nsfw: Some(message_nsfw),
+            other_group_bans: None,
+            settings,
+            reputation_min_bans,
+        }
+    }
+
     /// The group's threshold as a `0.0..=1.0` probability.
     pub fn threshold(&self) -> f32 {
         self.settings.threshold_ratio()
@@ -204,6 +264,9 @@ struct ProfilePhotos {
 /// Telegram lookups run concurrently; a failure in any one of them degrades
 /// that signal to "unavailable" rather than aborting the scan, because a
 /// hidden bio must not become a free pass for an obviously NSFW avatar.
+///
+/// `already_scored` carries a score the group media scan has just computed for
+/// this message's attachment, so the two passes never download it twice.
 pub async fn collect(
     app: &Arc<App>,
     bot: &Tg,
@@ -211,6 +274,7 @@ pub async fn collect(
     user: &User,
     message: &Message,
     needs: Needs,
+    already_scored: Option<ImageScoring>,
 ) -> ScanContext {
     let chat_id = settings.chat_id;
     let user_id = user.id.0 as i64;
@@ -227,15 +291,26 @@ pub async fn collect(
             &settings.nsfw_categories
         ),
         collect_profile_chat(bot, user_id, needs),
-        collect_message_media(
-            app,
-            bot,
-            message,
-            needs,
-            threshold,
-            &settings.nsfw_categories,
-            user_id
-        ),
+        // The group media scan runs before this and looks at the very same
+        // attachment, only more thoroughly — whole clips rather than one
+        // thumbnail. Re-fetching it here would buy the same answer twice.
+        async {
+            match already_scored {
+                Some(scoring) => Some(scoring),
+                None => {
+                    collect_message_media(
+                        app,
+                        bot,
+                        message,
+                        needs,
+                        threshold,
+                        &settings.nsfw_categories,
+                        user_id,
+                    )
+                    .await
+                }
+            }
+        },
         collect_reputation(app, user_id, chat_id, needs),
     );
 
@@ -344,7 +419,8 @@ async fn collect_profile(
     let nsfw = confirm(
         app, &images, fast, threshold, categories, "profile", user_id,
     )
-    .await;
+    .await
+    .map(|confirmed| confirmed.scoring);
 
     let avatar_text = {
         let joined = ocr.into_values().collect::<Vec<_>>().join(" ");
@@ -391,7 +467,11 @@ async fn collect_profile(
 /// That last case is deliberate. Falling back to the fast score would quietly
 /// restore the false positives this exists to prevent, so a scan that cannot be
 /// confirmed produces no image signal at all and no preset can act on it.
-async fn confirm(
+///
+/// `images` may be several: the frames of one clip, or an account's avatars.
+/// The worst of them wins, and [`Confirmed::image_id`] says which — that is how
+/// a report can name the frame it acted on.
+pub(crate) async fn confirm(
     app: &Arc<App>,
     images: &[ImageItem],
     fast: Option<f32>,
@@ -399,13 +479,16 @@ async fn confirm(
     categories: &[String],
     what: &str,
     user_id: i64,
-) -> Option<ImageScoring> {
+) -> Option<Confirmed> {
     let fast_score = fast?;
 
     // The overwhelming majority of scans stop here, which is what keeps the
     // heavy model affordable.
     if fast_score < threshold {
-        return Some(ImageScoring::screened(fast_score));
+        return Some(Confirmed {
+            scoring: ImageScoring::screened(fast_score),
+            image_id: None,
+        });
     }
 
     match app.detector.verify(images).await {
@@ -444,7 +527,10 @@ async fn confirm(
                 "second-stage verification"
             );
 
-            Some(scoring)
+            Some(Confirmed {
+                scoring,
+                image_id: Some(id),
+            })
         }
         Verification::Unavailable => {
             tracing::warn!(
@@ -456,6 +542,15 @@ async fn confirm(
             None
         }
     }
+}
+
+/// The outcome of [`confirm`]: a score, and which image produced it.
+#[derive(Debug, Clone)]
+pub(crate) struct Confirmed {
+    pub scoring: ImageScoring,
+    /// Id of the image the verifier scored worst. `None` when the batch never
+    /// reached the second stage, where there is no single image to name.
+    pub image_id: Option<String>,
 }
 
 /// The three outcomes of asking Telegram for a user's profile photos, kept
@@ -601,6 +696,7 @@ async fn collect_message_media(
         user_id,
     )
     .await
+    .map(|confirmed| confirmed.scoring)
 }
 
 /// The best still image in a message: a photo, or the thumbnail of a sticker,
@@ -640,7 +736,7 @@ async fn collect_reputation(
 }
 
 /// First and last name joined — what the group actually sees next to a message.
-fn display_name(user: &User) -> String {
+pub fn display_name(user: &User) -> String {
     match &user.last_name {
         Some(last) => format!("{} {last}", user.first_name),
         None => user.first_name.clone(),

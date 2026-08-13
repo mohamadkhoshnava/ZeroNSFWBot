@@ -6,9 +6,12 @@ hidden advertising.
 
 **Features**
 
-- Auto-detect NSFW advertisers
-- Scan profiles and comments
-- Instant auto-ban
+- Auto-detect NSFW advertisers from the profile photo, bio, name and attached channel
+- Two-stage scoring: everything the fast model flags is re-checked by a stricter one
+- Optional **group media scan** — the photos, GIFs, stickers and videos posted in
+  the group, from every member, with its own threshold and its own action
+- GIFs and videos sampled across the whole clip, not judged by their preview frame
+- Instant auto-ban, or delete-only, or mute, or report — per group
 - Reduce spam and keep communities clean
 
 Four UI languages — English, فارسی, Русский, العربية — picked automatically from
@@ -68,6 +71,53 @@ ordinary, privacy-conscious users and contains no evidence of NSFW content at
 all; it once banned a real group member on a report that read *NSFW probability:
 0%*. It remains available under **Custom**, where an admin pairs it with
 something else on purpose.
+
+## The group media scan
+
+Everything above answers *"is this account a spam profile?"*. The media scan
+answers a different question — *"is this picture pornography?"* — and is a
+separate switch, off until an admin turns it on under `/nsfw → 🖼 Media scan`.
+
+The difference is not cosmetic. The profile scan runs inside the grace window
+and skips anyone who recently scanned clean, because an account's nature does
+not change between messages. A picture is not an account: a member of two years
+can post one, so the media scan applies to everyone, every time, and never
+consults the clean-user cache.
+
+That independence is why it carries its own numbers:
+
+| | Profile scan | Media scan |
+|---|---|---|
+| Threshold | 40% | **90%** |
+| Action | Ban + delete | **Delete only** |
+| Applies to | Members inside the grace window | **Everyone** |
+| Enabled | Always | **Off by default** |
+
+40% is a sensible bar for one signal weighed against a bio, an avatar and a
+pinned channel. It is a reckless bar for deleting a long-standing member's
+holiday photo on a model's opinion alone, which is why acting on an image by
+itself demands near-certainty. Both numbers are editable, and moving one never
+moves the other.
+
+**Clips are sampled, not thumbnailed.** Telegram re-encodes every uploaded GIF
+to a soundless MP4 and serves a poster thumbnail taken from an arbitrary frame.
+Scoring that thumbnail is scoring a guess, and a clip that opens on something
+innocuous and turns explicit later is a technique, not a hypothesis. The bot
+downloads the clip and asks the detector's `/frames` endpoint for several stills
+spread across its full length — Pillow for true GIF/WebP/APNG bytes, ffmpeg for
+MP4 and WebM — then scores every frame and keeps the worst. The detection detail
+names the frame it acted on (`91% → 94% · porn 93% · frame 4/5`), so an admin
+looking at an innocent-looking preview can see why.
+
+Cost is bounded at every step: a per-group frame count (default 5, hard ceiling
+12), a file-size cap above which the thumbnail is used instead, per-kind
+switches so a busy group can exclude videos, and a content-addressed cache keyed
+by Telegram's `file_unique_id` — the same sticker posted a thousand times is
+downloaded and scored once.
+
+If the detector image was built without ffmpeg (`ENABLE_VIDEO=false`), `/frames`
+says so rather than silently returning one frame, and the bot falls back to the
+thumbnail.
 
 ## Architecture
 
@@ -178,6 +228,7 @@ message you want to send.
 | ⚡ **Action** | Ban + delete · Delete only · Mute + delete · Report only. |
 | 🕶 **Test mode** | Detect and report, change nothing. |
 | 🛡 **Grace window** | Only scan members below N messages. Long-standing members are skipped, which cuts both false positives and CPU use. |
+| 🖼 **Media scan** | Check the media posted in the group, from every member. Own sub-panel: on/off, its own threshold (90%), its own action (delete), which kinds to cover, and frames sampled per clip. **Off by default.** |
 | 🌍 **Shared blocklist** | Flag accounts banned for this in other groups, and contribute your own bans back. |
 | 🔔 **My DM alerts** | Per-admin: get a private message on every removal. |
 | 🧹 **Clean up my messages** | Auto-delete the bot's own reports after a TTL. **Off by default.** |

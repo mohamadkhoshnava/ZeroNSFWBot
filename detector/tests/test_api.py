@@ -145,6 +145,171 @@ def test_ocr_returns_empty_results_when_disabled(client, monkeypatch):
     assert body["results"] == [{"id": "a", "text": "", "error": None}]
 
 
+# --------------------------------------------------------------------------
+# Frame sampling.
+# --------------------------------------------------------------------------
+
+
+def gif_b64(colors: list[tuple[int, int, int]], size: tuple[int, int] = (32, 32)) -> str:
+    """An animated GIF, one solid-colour frame per entry."""
+    images = [Image.new("RGB", size, color) for color in colors]
+    buf = io.BytesIO()
+    images[0].save(buf, format="GIF", save_all=True, append_images=images[1:], duration=100)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def test_a_still_image_yields_exactly_one_frame(client):
+    body = client.post(
+        "/frames", json={"images": [{"id": "a", "data": png_b64((0, 0, 0))}], "max_frames": 5}
+    ).json()
+
+    result = body["results"][0]
+    assert result["error"] is None
+    assert result["total"] == 1
+    assert len(result["frames"]) == 1
+    assert result["decoder"] == "still"
+
+
+def test_an_animated_gif_is_sampled_across_its_length(client):
+    # 10 frames, sampled 5 times: the sampler must reach the last frame, not
+    # just the first — spam GIFs routinely open on something innocuous.
+    body = client.post(
+        "/frames",
+        json={"images": [{"id": "g", "data": gif_b64([(i * 25, 0, 0) for i in range(10)])}],
+              "max_frames": 5},
+    ).json()
+
+    result = body["results"][0]
+    assert result["error"] is None
+    assert result["total"] == 10
+    assert result["decoder"] == "pillow"
+
+    indices = [f["index"] for f in result["frames"]]
+    assert indices[0] == 0
+    assert indices[-1] == 9, f"the tail of the clip was never sampled: {indices}"
+    assert indices == sorted(indices)
+    assert len(indices) == 5
+
+
+def test_frame_ids_trace_back_to_their_clip(client):
+    body = client.post(
+        "/frames", json={"images": [{"id": "clip", "data": gif_b64([(0, 0, 0), (9, 9, 9)])}]}
+    ).json()
+
+    assert [f["id"] for f in body["results"][0]["frames"]] == ["clip#0", "clip#1"]
+
+
+def test_extracted_frames_can_be_scored_directly(client):
+    """The point of the endpoint: its output is a /classify request body."""
+    frames_body = client.post(
+        "/frames",
+        json={"images": [{"id": "g", "data": gif_b64([(0, 0, 0), (255, 0, 0)])}]},
+    ).json()
+
+    images = [{"id": f["id"], "data": f["data"]} for f in frames_body["results"][0]["frames"]]
+    results = client.post("/classify", json={"images": images}).json()["results"]
+
+    assert [r["id"] for r in results] == ["g#0", "g#1"]
+    # The red frame is the one that scores, and it is not the first — exactly
+    # the case a thumbnail-only check misses.
+    assert results[1]["nsfw"] > results[0]["nsfw"]
+
+
+def test_one_undecodable_clip_does_not_fail_the_batch(client):
+    body = client.post(
+        "/frames",
+        json={"images": [
+            {"id": "good", "data": png_b64((0, 0, 0))},
+            {"id": "junk", "data": base64.b64encode(b"neither image nor video").decode()},
+        ]},
+    ).json()
+
+    results = {r["id"]: r for r in body["results"]}
+    assert results["good"]["error"] is None
+    assert results["junk"]["error"] is not None
+    assert results["junk"]["frames"] == []
+
+
+def test_video_without_ffmpeg_is_reported_not_guessed(client, monkeypatch):
+    """A silent single-frame fallback would look like a completed check."""
+    monkeypatch.setattr(main.frames, "video_available", lambda: False)
+    # An MP4 header is enough: the sniffer never gets as far as decoding.
+    mp4 = base64.b64encode(b"\x00\x00\x00\x20ftypisom" + b"\x00" * 64).decode()
+
+    body = client.post("/frames", json={"images": [{"id": "v", "data": mp4}]}).json()
+
+    assert body["video_enabled"] is False
+    assert "unavailable" in body["results"][0]["error"]
+
+
+def test_the_frame_limit_is_capped_by_configuration(client):
+    body = client.post(
+        "/frames",
+        json={"images": [{"id": "g", "data": gif_b64([(i, 0, 0) for i in range(60)])}],
+              "max_frames": 10_000},
+    ).json()
+
+    assert len(body["results"][0]["frames"]) <= config.MAX_FRAMES
+
+
+@pytest.mark.skipif(
+    not __import__("shutil").which("ffmpeg") or not __import__("shutil").which("ffprobe"),
+    reason="ffmpeg is not installed on this host",
+)
+def test_a_real_clip_is_sampled_past_its_opening(tmp_path):
+    """The case the whole endpoint exists for.
+
+    Telegram re-encodes uploaded GIFs to MP4 and hands out a poster thumbnail
+    taken from the start. A clip that is innocuous for its first half and
+    explicit for its second must be caught, which means frames from both.
+    """
+    import shutil
+    import subprocess
+
+    from app import frames as frames_mod
+
+    clip = tmp_path / "clip.mp4"
+    subprocess.run(
+        [shutil.which("ffmpeg"), "-v", "error", "-y",
+         "-f", "lavfi", "-i", "color=c=black:s=64x64:d=2",
+         "-f", "lavfi", "-i", "color=c=red:s=64x64:d=2",
+         "-filter_complex", "[0:v][1:v]concat=n=2:v=1",
+         "-pix_fmt", "yuv420p", str(clip)],
+        check=True,
+        capture_output=True,
+    )
+
+    sampled = frames_mod.sample(clip.read_bytes(), 5)
+
+    assert sampled.decoder == "ffmpeg"
+    assert len(sampled.frames) == 5
+
+    reds = [
+        Image.open(io.BytesIO(f.data)).convert("RGB").resize((1, 1)).getpixel((0, 0))[0]
+        for f in sampled.frames
+    ]
+    assert reds[0] < 32, "the opening frame should still be the black half"
+    assert reds[-1] > 200, "the second half of the clip was never sampled"
+
+
+def test_the_sniffer_tells_containers_apart():
+    from app import frames as frames_mod
+
+    assert frames_mod.sniff(b"\x00\x00\x00\x20ftypisom") == "video"
+    assert frames_mod.sniff(b"\x1a\x45\xdf\xa3rest-of-webm") == "video"
+    assert frames_mod.sniff(b"GIF89a...") == "image"
+    assert frames_mod.sniff(b"\x89PNG\r\n\x1a\n") == "image"
+
+
+def test_the_spread_covers_both_ends():
+    from app.frames import _spread
+
+    assert _spread(1, 5) == [0]
+    assert _spread(3, 5) == [0, 1, 2]
+    assert _spread(10, 5) == [0, 2, 4, 7, 9]
+    assert _spread(100, 3) == [0, 50, 99]
+
+
 def test_softmax_rows_sum_to_one():
     probs = _softmax(np.array([[2.0, -1.0], [0.0, 0.0], [100.0, 99.0]]))
     assert np.allclose(probs.sum(axis=-1), 1.0)

@@ -23,12 +23,15 @@ services:
         MODEL_ID: ${DETECTOR_MODEL_ID:-Marqo/nsfw-image-detection-384}
         VERIFIER_MODEL_ID: ${VERIFIER_MODEL_ID:-giacomoarienti/nsfw-classifier}
         ENABLE_OCR: ${ENABLE_OCR:-true}
+        ENABLE_VIDEO: ${ENABLE_VIDEO:-true}
     restart: unless-stopped
     environment:
       DETECTOR_THREADS: ${DETECTOR_THREADS:-2}
       ENABLE_OCR: ${ENABLE_OCR:-true}
       ENABLE_VERIFIER: ${ENABLE_VERIFIER:-true}
+      ENABLE_VIDEO: ${ENABLE_VIDEO:-true}
       OCR_LANGS: ${OCR_LANGS:-eng+fas+ara+rus}
+      DETECTOR_MAX_FRAMES: ${DETECTOR_MAX_FRAMES:-12}
       LOG_LEVEL: ${DETECTOR_LOG_LEVEL:-info}
     ports:
       # Exposed so scripts/eval_images.sh and manual curl work from the host.

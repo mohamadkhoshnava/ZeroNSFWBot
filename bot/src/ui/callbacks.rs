@@ -8,6 +8,7 @@
 use std::str::FromStr;
 
 use crate::{
+    db::models::MediaKind,
     i18n::Lang,
     policy::{Action, Policy},
 };
@@ -20,6 +21,12 @@ pub enum PanelView {
     Policy,
     Custom,
     Categories,
+    /// The group media scan and its own threshold, action and kinds.
+    Media,
+    MediaKinds,
+    MediaThreshold,
+    MediaAction,
+    MediaFrames,
     Action,
     Lang,
     Notify,
@@ -31,6 +38,24 @@ pub enum PanelView {
 }
 
 impl PanelView {
+    /// Every screen. Adding a variant without linking to it from the main panel
+    /// fails `panel::tests::every_panel_view_is_reachable_from_the_main_screen`.
+    pub const ALL: [PanelView; 13] = [
+        PanelView::Main,
+        PanelView::Threshold,
+        PanelView::Policy,
+        PanelView::Custom,
+        PanelView::Categories,
+        PanelView::Action,
+        PanelView::Lang,
+        PanelView::Notify,
+        PanelView::Stats,
+        PanelView::DryRun,
+        PanelView::Grace,
+        PanelView::Global,
+        PanelView::AutoDelete,
+    ];
+
     const fn code(self) -> &'static str {
         match self {
             PanelView::Main => "m",
@@ -38,6 +63,11 @@ impl PanelView {
             PanelView::Policy => "po",
             PanelView::Custom => "cu",
             PanelView::Categories => "ca",
+            PanelView::Media => "me",
+            PanelView::MediaKinds => "mk",
+            PanelView::MediaThreshold => "mt",
+            PanelView::MediaAction => "ma",
+            PanelView::MediaFrames => "mf",
             PanelView::Action => "ac",
             PanelView::Lang => "la",
             PanelView::Notify => "no",
@@ -56,6 +86,11 @@ impl PanelView {
             "po" => PanelView::Policy,
             "cu" => PanelView::Custom,
             "ca" => PanelView::Categories,
+            "me" => PanelView::Media,
+            "mk" => PanelView::MediaKinds,
+            "mt" => PanelView::MediaThreshold,
+            "ma" => PanelView::MediaAction,
+            "mf" => PanelView::MediaFrames,
             "ac" => PanelView::Action,
             "la" => PanelView::Lang,
             "no" => PanelView::Notify,
@@ -117,6 +152,17 @@ pub enum CallbackAction {
     ToggleGlobal,
     ToggleAutoDelete,
     SetGrace(i32),
+
+    /// Turn the group media scan on or off.
+    ToggleMediaScan,
+    /// Nudge the media threshold, which is separate from the profile one.
+    AdjustMediaThreshold(i16),
+    SetMediaAction(Action),
+    /// Add or remove one kind of media from the scan.
+    ToggleMediaKind(MediaKind),
+    /// Stills sampled across an animation or clip.
+    SetMediaFrames(i16),
+
     Reset,
     Close,
 
@@ -155,6 +201,11 @@ impl CallbackAction {
             CallbackAction::ToggleGlobal => "p:glt".to_owned(),
             CallbackAction::ToggleAutoDelete => "p:adt".to_owned(),
             CallbackAction::SetGrace(n) => format!("p:grs:{n}"),
+            CallbackAction::ToggleMediaScan => "p:met".to_owned(),
+            CallbackAction::AdjustMediaThreshold(delta) => format!("p:mtd:{delta}"),
+            CallbackAction::SetMediaAction(action) => format!("p:mas:{action}"),
+            CallbackAction::ToggleMediaKind(kind) => format!("p:mkt:{kind}"),
+            CallbackAction::SetMediaFrames(n) => format!("p:mfs:{n}"),
             CallbackAction::Reset => "p:rst".to_owned(),
             CallbackAction::Close => "p:x".to_owned(),
 
@@ -196,6 +247,11 @@ impl CallbackAction {
             ["p", "glt"] => CallbackAction::ToggleGlobal,
             ["p", "adt"] => CallbackAction::ToggleAutoDelete,
             ["p", "grs", n] => CallbackAction::SetGrace(n.parse().ok()?),
+            ["p", "met"] => CallbackAction::ToggleMediaScan,
+            ["p", "mtd", delta] => CallbackAction::AdjustMediaThreshold(delta.parse().ok()?),
+            ["p", "mas", action] => CallbackAction::SetMediaAction(Action::from_str(action).ok()?),
+            ["p", "mkt", kind] => CallbackAction::ToggleMediaKind(MediaKind::from_str(kind).ok()?),
+            ["p", "mfs", n] => CallbackAction::SetMediaFrames(n.parse().ok()?),
             ["p", "rst"] => CallbackAction::Reset,
             ["p", "x"] => CallbackAction::Close,
             // Must come last among the `p:` arms: the two-part patterns above
@@ -257,9 +313,52 @@ mod tests {
             PanelView::Grace,
             PanelView::Global,
             PanelView::AutoDelete,
+            PanelView::Media,
+            PanelView::MediaKinds,
+            PanelView::MediaThreshold,
+            PanelView::MediaAction,
+            PanelView::MediaFrames,
         ] {
             round_trip(CallbackAction::Panel(view));
         }
+    }
+
+    /// Every media setting is reachable and survives the wire format. A code
+    /// that collides with another view's would silently open the wrong screen.
+    #[test]
+    fn media_settings_round_trip() {
+        round_trip(CallbackAction::ToggleMediaScan);
+        round_trip(CallbackAction::AdjustMediaThreshold(5));
+        round_trip(CallbackAction::AdjustMediaThreshold(-10));
+        round_trip(CallbackAction::SetMediaFrames(9));
+
+        for action in Action::ALL {
+            round_trip(CallbackAction::SetMediaAction(action));
+        }
+        for kind in MediaKind::ALL {
+            round_trip(CallbackAction::ToggleMediaKind(kind));
+        }
+    }
+
+    /// The media threshold and action have their own codes. Sharing one with
+    /// the profile settings would mean tuning one silently moved the other —
+    /// the exact confusion the separate section exists to prevent.
+    #[test]
+    fn media_settings_do_not_share_codes_with_the_profile_ones() {
+        assert_ne!(
+            CallbackAction::AdjustMediaThreshold(5).encode(),
+            CallbackAction::AdjustThreshold(5).encode()
+        );
+        assert_ne!(
+            CallbackAction::SetMediaAction(Action::Ban).encode(),
+            CallbackAction::SetAction(Action::Ban).encode()
+        );
+
+        // And decoding a profile action never yields a media one.
+        assert_eq!(
+            CallbackAction::decode(&CallbackAction::AdjustThreshold(5).encode()),
+            Some(CallbackAction::AdjustThreshold(5))
+        );
     }
 
     #[test]

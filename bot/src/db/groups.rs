@@ -1,7 +1,7 @@
 use anyhow::Result;
 use sqlx::PgPool;
 
-use super::models::{GroupRow, GroupSettings};
+use super::models::{GroupRow, GroupSettings, MAX_MEDIA_FRAMES, MediaKind};
 use crate::{
     config::GroupDefaults,
     i18n::Lang,
@@ -16,7 +16,8 @@ macro_rules! group_columns {
     () => {
         "chat_id, title, username, lang, lang_locked, threshold, policy, \
          custom_filters, nsfw_categories, action, dry_run, grace_messages, delete_bot_messages, \
-         bot_message_ttl_secs, global_blocklist, member_count, is_active, \
+         bot_message_ttl_secs, global_blocklist, media_scan, media_threshold, \
+         media_action, media_kinds, media_frames, member_count, is_active, \
          added_at, updated_at"
     };
 }
@@ -36,8 +37,9 @@ pub async fn get_or_create(
     let row: GroupRow = sqlx::query_as(concat!(
         "INSERT INTO groups (chat_id, title, lang, threshold, policy, action, ",
         "                    dry_run, grace_messages, delete_bot_messages, ",
-        "                    bot_message_ttl_secs) ",
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ",
+        "                    bot_message_ttl_secs, media_scan, media_threshold, ",
+        "                    media_action, media_frames) ",
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ",
         "ON CONFLICT (chat_id) DO UPDATE ",
         "    SET title      = COALESCE(EXCLUDED.title, groups.title), ",
         "        is_active  = TRUE, ",
@@ -55,6 +57,10 @@ pub async fn get_or_create(
     .bind(defaults.grace_messages)
     .bind(defaults.delete_bot_messages)
     .bind(defaults.bot_message_ttl_secs)
+    .bind(defaults.media_scan)
+    .bind(defaults.media_threshold)
+    .bind(defaults.media_action.as_str())
+    .bind(defaults.media_frames)
     .fetch_one(pool)
     .await?;
 
@@ -132,6 +138,44 @@ pub async fn set_action(pool: &PgPool, chat_id: i64, action: Action) -> Result<(
     Ok(())
 }
 
+pub async fn set_media_threshold(pool: &PgPool, chat_id: i64, threshold: i16) -> Result<()> {
+    sqlx::query("UPDATE groups SET media_threshold = $2, updated_at = now() WHERE chat_id = $1")
+        .bind(chat_id)
+        .bind(threshold.clamp(0, 100))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn set_media_action(pool: &PgPool, chat_id: i64, action: Action) -> Result<()> {
+    sqlx::query("UPDATE groups SET media_action = $2, updated_at = now() WHERE chat_id = $1")
+        .bind(chat_id)
+        .bind(action.as_str())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Replace the set of media kinds the group scan covers.
+pub async fn set_media_kinds(pool: &PgPool, chat_id: i64, kinds: &[MediaKind]) -> Result<()> {
+    let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
+    sqlx::query("UPDATE groups SET media_kinds = $2, updated_at = now() WHERE chat_id = $1")
+        .bind(chat_id)
+        .bind(serde_json::to_value(names)?)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn set_media_frames(pool: &PgPool, chat_id: i64, frames: i16) -> Result<()> {
+    sqlx::query("UPDATE groups SET media_frames = $2, updated_at = now() WHERE chat_id = $1")
+        .bind(chat_id)
+        .bind(frames.clamp(1, MAX_MEDIA_FRAMES))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Flip a boolean column and return its new value.
 ///
 /// The column name is interpolated, which sqlx rightly makes you assert. It is
@@ -159,6 +203,7 @@ pub enum BoolColumn {
     DryRun,
     DeleteBotMessages,
     GlobalBlocklist,
+    MediaScan,
 }
 
 impl BoolColumn {
@@ -167,6 +212,7 @@ impl BoolColumn {
             BoolColumn::DryRun => "dry_run",
             BoolColumn::DeleteBotMessages => "delete_bot_messages",
             BoolColumn::GlobalBlocklist => "global_blocklist",
+            BoolColumn::MediaScan => "media_scan",
         }
     }
 }
@@ -189,7 +235,10 @@ pub async fn reset(pool: &PgPool, chat_id: i64, defaults: &GroupDefaults) -> Res
         SET threshold = $2, policy = $3, action = $4, custom_filters = '[]',
             nsfw_categories = '["porn", "hentai"]',
             dry_run = $5, grace_messages = $6, delete_bot_messages = $7,
-            bot_message_ttl_secs = $8, global_blocklist = TRUE, updated_at = now()
+            bot_message_ttl_secs = $8, global_blocklist = TRUE,
+            media_scan = $9, media_threshold = $10, media_action = $11,
+            media_kinds = '["photo", "animation", "sticker", "video"]',
+            media_frames = $12, updated_at = now()
         WHERE chat_id = $1
         "#,
     )
@@ -201,6 +250,10 @@ pub async fn reset(pool: &PgPool, chat_id: i64, defaults: &GroupDefaults) -> Res
     .bind(defaults.grace_messages)
     .bind(defaults.delete_bot_messages)
     .bind(defaults.bot_message_ttl_secs)
+    .bind(defaults.media_scan)
+    .bind(defaults.media_threshold)
+    .bind(defaults.media_action.as_str())
+    .bind(defaults.media_frames)
     .execute(pool)
     .await?;
     Ok(())

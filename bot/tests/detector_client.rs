@@ -295,3 +295,116 @@ async fn images_the_verifier_could_not_score_are_dropped() {
         Verification::Unavailable => panic!("one bad image must not void the batch"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Frame sampling.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn frames_come_back_ready_to_classify() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/frames"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "video_enabled": true,
+            "results": [{
+                "id": "clip",
+                "total": 40,
+                "decoder": "ffmpeg",
+                "error": null,
+                "frames": [
+                    {"id": "clip#0", "index": 0, "data": "AAAA"},
+                    {"id": "clip#20", "index": 20, "data": "BBBB"},
+                    {"id": "clip#39", "index": 39, "data": "CCCC"},
+                ],
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let sampled = client(&server, false)
+        .frames(&image("clip"), 3)
+        .await
+        .expect("request succeeds")
+        .expect("the clip was decodable");
+
+    assert_eq!(sampled.images.len(), 3);
+    assert_eq!(sampled.total, 40);
+    // Ids trace each frame back to its clip, so a score can name the frame.
+    assert_eq!(sampled.images[1].id, "clip#20");
+    // The base64 is passed straight through: decoding it here only to encode
+    // it again for /classify would be pure waste.
+    assert_eq!(sampled.images[1].data, "BBBB");
+}
+
+/// A clip this build cannot decode is a real answer, not a transport failure:
+/// the caller falls back to Telegram's thumbnail rather than skipping the
+/// check or retrying.
+#[tokio::test]
+async fn an_undecodable_clip_is_reported_as_no_frames_not_an_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/frames"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "video_enabled": false,
+            "results": [{
+                "id": "clip",
+                "total": 0,
+                "decoder": "",
+                "frames": [],
+                "error": "video decoding is unavailable in this build",
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let sampled = client(&server, false)
+        .frames(&image("clip"), 5)
+        .await
+        .expect("the request itself succeeded");
+
+    assert!(sampled.is_none());
+}
+
+#[tokio::test]
+async fn a_frames_failure_is_loud_so_the_caller_can_fall_back() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/frames"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    assert!(
+        client(&server, false)
+            .frames(&image("clip"), 5)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn the_requested_frame_count_reaches_the_detector() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/frames"))
+        .and(body_json_string(
+            json!({"images": [{"id": "clip", "data": "bm90LXJlYWxseS1hLWpwZWc="}], "max_frames": 9})
+                .to_string(),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "video_enabled": true,
+            "results": [{"id": "clip", "total": 1, "decoder": "still", "error": null,
+                         "frames": [{"id": "clip#0", "index": 0, "data": "AAAA"}]}]
+        })))
+        .mount(&server)
+        .await;
+
+    assert!(
+        client(&server, false)
+            .frames(&image("clip"), 9)
+            .await
+            .expect("request succeeds")
+            .is_some()
+    );
+}

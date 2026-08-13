@@ -25,6 +25,10 @@ fn defaults() -> GroupDefaults {
         grace_messages: 5,
         delete_bot_messages: false,
         bot_message_ttl_secs: 60,
+        media_scan: false,
+        media_threshold: 90,
+        media_action: Action::Delete,
+        media_frames: 5,
     }
 }
 
@@ -417,6 +421,7 @@ async fn a_verified_score_below_the_threshold_clears_the_account() {
         score: 0.07,
         verified: true,
         labels: vec![("drawings".into(), 0.76), ("neutral".into(), 0.14)],
+        sampled: None,
     });
 
     let (report, verdict) = run(&ctx).await;
@@ -441,6 +446,7 @@ async fn a_verified_score_above_the_threshold_still_bans() {
         score: 0.94,
         verified: true,
         labels: vec![("porn".into(), 0.91), ("sexy".into(), 0.05)],
+        sampled: None,
     });
 
     let (report, verdict) = run(&ctx).await;
@@ -466,6 +472,7 @@ fn the_detail_shows_both_stages_and_the_leading_class() {
         score: 0.073,
         verified: true,
         labels: vec![("drawings".into(), 0.761), ("neutral".into(), 0.14)],
+        sampled: None,
     };
 
     assert_eq!(scoring.detail(), "88% → 7% · drawings 76%");

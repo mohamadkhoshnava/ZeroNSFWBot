@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use teloxide::types::Message;
 
-use crate::{App, Tg, db, enforcement, i18n, policy, scan};
+use crate::{App, Tg, db, enforcement, filters, i18n, media, policy, scan};
 
 pub async fn handle_message(bot: Tg, msg: Message, app: Arc<App>) -> anyhow::Result<()> {
     if let Err(err) = scan_message(&bot, &msg, &app).await {
@@ -64,7 +64,14 @@ async fn scan_message(bot: &Tg, msg: &Message, app: &Arc<App>) -> anyhow::Result
     // is about how long someone has been present, not how often we looked.
     let message_count = db::groups::bump_message_count(&app.db, chat_id, user_id).await?;
 
-    if !should_scan(app, &settings, chat_id, user_id, message_count).await {
+    let profile_pass = should_scan(app, &settings, chat_id, user_id, message_count).await;
+    // The media scan deliberately ignores the grace window and the clean-user
+    // cache. Both exist to answer "have we already established this account is
+    // not a spam profile?", which says nothing about the picture in front of
+    // us: a member of two years can still post pornography.
+    let attachment = media::find(msg, &settings, app.cfg.media_max_bytes);
+
+    if !profile_pass && attachment.is_none() {
         return Ok(());
     }
 
@@ -78,8 +85,51 @@ async fn scan_message(bot: &Tg, msg: &Message, app: &Arc<App>) -> anyhow::Result
     let needs = app
         .filters
         .needs_for(&settings.policy.relevant_filters(&settings.custom_filters));
+    // Whether the profile pass wants this same attachment. Only then is there a
+    // second consumer for the score, and only then does its lower threshold
+    // have any bearing on how carefully the score must be established.
+    let shared = profile_pass && needs.message_media;
 
-    let ctx = scan::collect(app, bot, settings.clone(), user, msg, needs).await;
+    // One score serves both passes, verified at whichever bar is lower, so a
+    // score either of them would act on has always been through the second
+    // stage — and the attachment is downloaded once, not twice.
+    let media_scoring = match &attachment {
+        Some(attachment) => {
+            let verify_at = if shared {
+                settings
+                    .threshold_ratio()
+                    .min(settings.media_threshold_ratio())
+            } else {
+                settings.media_threshold_ratio()
+            };
+            media::scan(app, bot, &settings, attachment, verify_at, user_id).await
+        }
+        None => None,
+    };
+
+    if let Some(scoring) = &media_scoring
+        && scoring.score >= settings.media_threshold_ratio()
+    {
+        return media_verdict(app, bot, &settings, user, msg, scoring.clone()).await;
+    }
+
+    if !profile_pass {
+        return Ok(());
+    }
+
+    // Handed on only when the profile pass asked for message media. Feeding it
+    // a signal its policy never requested would put a score in the report that
+    // nothing consulted.
+    let ctx = scan::collect(
+        app,
+        bot,
+        settings.clone(),
+        user,
+        msg,
+        needs,
+        shared.then_some(media_scoring).flatten(),
+    )
+    .await;
 
     let report = app.filters.evaluate(&ctx).await;
     let verdict = policy::evaluate(
@@ -98,6 +148,52 @@ async fn scan_message(bot: &Tg, msg: &Message, app: &Arc<App>) -> anyhow::Result
     }
 
     enforcement::enforce(app, bot, &settings, &ctx, &report, &verdict, msg.id).await
+}
+
+/// Act on explicit media, on the media section's own terms.
+///
+/// Built by hand rather than run through [`policy::evaluate`] on purpose. The
+/// presets answer "does this account look like a spam profile", weighing an
+/// avatar against a bio against a pinned channel. None of that is in evidence
+/// here and none of it was looked up: the finding is about one picture, so the
+/// verdict names one signal and uses the section's own action.
+async fn media_verdict(
+    app: &Arc<App>,
+    bot: &Tg,
+    settings: &crate::db::models::GroupSettings,
+    user: &teloxide::types::User,
+    msg: &Message,
+    scoring: crate::scan::ImageScoring,
+) -> anyhow::Result<()> {
+    let mut report = filters::ScanReport::default();
+    report.insert(
+        filters::F_MESSAGE_MEDIA,
+        filters::FilterOutcome::triggered(scoring.score, Some(scoring.detail())),
+    );
+
+    let verdict = policy::Verdict {
+        matched: true,
+        // Test mode is a promise that nothing will be changed, and it covers
+        // every part of the bot or it is worthless.
+        action: if settings.dry_run {
+            policy::Action::Report
+        } else {
+            settings.media_action
+        },
+        score: scoring.score,
+        reasons: vec![filters::F_MESSAGE_MEDIA],
+    };
+
+    let ctx = scan::ScanContext::media_only(
+        user.id.0 as i64,
+        scan::display_name(user),
+        user.username.clone(),
+        settings.clone(),
+        scoring,
+        app.cfg.global_reputation_min_bans,
+    );
+
+    enforcement::enforce(app, bot, settings, &ctx, &report, &verdict, msg.id).await
 }
 
 /// The cheap pre-checks, ordered from cheapest to most expensive.
