@@ -141,9 +141,21 @@ async fn scan_message(bot: &Tg, msg: &Message, app: &Arc<App>) -> anyhow::Result
     );
 
     if !verdict.matched {
-        // Remember the clean result so a chatty newcomer is not re-scanned on
-        // every message for the rest of their grace window.
-        app.recent_clean.insert((chat_id, user_id), ()).await;
+        // A non-match is only worth caching when the signals that actually
+        // establish the profile were gathered successfully. A photo that could
+        // not be downloaded, an avatar the verifier could not confirm, or a bio
+        // the API hid all leave their filter `unavailable`, and such a scan is
+        // *inconclusive* — not clean. Caching it would exempt a newcomer from
+        // further checks for the whole grace window, which is exactly the
+        // "profile photos are ignored" symptom that occurs whenever the
+        // detector is briefly unreachable during a spam run.
+        //
+        // Only the filters whose absence is a real failure count here; a group
+        // that deliberately opts out of the shared blocklist or OCR must still
+        // get its clean newcomers cached.
+        if report.definitely_clean(filters::DECISIVE_FILTERS) {
+            app.recent_clean.insert((chat_id, user_id), ()).await;
+        }
         return Ok(());
     }
 

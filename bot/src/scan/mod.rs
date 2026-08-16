@@ -462,11 +462,10 @@ async fn collect_profile(
 ///
 /// * below the threshold → the fast score, unchanged (nothing to confirm)
 /// * verified            → the verifier's score, which is what gets reported
-/// * verifier missing    → `None`, i.e. *unknown*
-///
-/// That last case is deliberate. Falling back to the fast score would quietly
-/// restore the false positives this exists to prevent, so a scan that cannot be
-/// confirmed produces no image signal at all and no preset can act on it.
+/// * verifier missing, fast score ≥ fallback threshold → the fast score,
+///   because a very high fast score is confident enough on its own
+/// * verifier missing, fast score < fallback threshold → `None`, i.e.
+///   *unknown* — still better to miss one than to false-positive
 ///
 /// `images` may be several: the frames of one clip, or an account's avatars.
 /// The worst of them wins, and [`Confirmed::image_id`] says which — that is how
@@ -533,14 +532,54 @@ pub(crate) async fn confirm(
             })
         }
         Verification::Unavailable => {
-            tracing::warn!(
-                user_id,
-                what,
-                fast = fast_score,
-                "flagged but unverifiable; declining to treat it as a signal"
-            );
-            None
+            let fallback = app.cfg.verifier_fallback_threshold;
+
+            match unverified_fallback(fast_score, fallback) {
+                None => {
+                    tracing::warn!(
+                        user_id,
+                        what,
+                        fast = fast_score,
+                        fallback_threshold = fallback,
+                        "flagged but unverifiable and below fallback threshold; \
+                         declining to treat it as a signal"
+                    );
+                    None
+                }
+                Some(scoring) => {
+                    // The fast score is high enough that even the model that
+                    // over-flags stylised art is unlikely to be wrong. Use it,
+                    // but log loudly so an operator can see this was not a
+                    // verified verdict.
+                    tracing::warn!(
+                        user_id,
+                        what,
+                        fast = fast_score,
+                        fallback_threshold = fallback,
+                        "verifier unavailable; using fast score (above fallback threshold)"
+                    );
+                    Some(Confirmed {
+                        scoring,
+                        image_id: None,
+                    })
+                }
+            }
         }
+    }
+}
+
+/// The verdict when the verifier is unreachable: trust the fast score only if
+/// it is confident enough on its own, otherwise discard it.
+///
+/// Extracted as a pure function so the safety-critical threshold comparison can
+/// be tested without spinning up a detector. `fallback` is a probability in
+/// `0.0..=1.0`; `0.0` reproduces the original "never trust the fast score"
+/// behaviour that the verifier was added to override.
+pub fn unverified_fallback(fast_score: f32, fallback: f32) -> Option<ImageScoring> {
+    if fallback > 0.0 && fast_score >= fallback {
+        Some(ImageScoring::screened(fast_score))
+    } else {
+        None
     }
 }
 

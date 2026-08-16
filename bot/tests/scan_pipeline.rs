@@ -11,7 +11,7 @@ use zeronsfw_bot::{
     filters::{FilterRegistry, ScanReport},
     i18n::Lang,
     policy::{self, Action, Policy, Verdict},
-    scan::{ImageScoring, LinkedChannel, PersonalChannel, PhotoAccess, ScanContext},
+    scan::{self, ImageScoring, LinkedChannel, PersonalChannel, PhotoAccess, ScanContext},
 };
 
 fn defaults() -> GroupDefaults {
@@ -483,6 +483,45 @@ fn an_unverified_detail_shows_one_number_not_a_misleading_arrow() {
     // Below the threshold, so no second stage ran. Rendering "6% → 6%" would
     // imply a confirmation that never happened.
     assert_eq!(ImageScoring::screened(0.061).detail(), "6%");
+}
+
+// ---------------------------------------------------------------------------
+// Fallback when the verifier is unreachable.
+//
+// The pre-existing behaviour was to discard the fast score entirely when the
+// verifier was missing — which is what made the bot look like it ignored every
+// image. The fallback trusts the fast score only when it is confident enough on
+// its own, because a very high fast score is right often enough to act on even
+// without the second opinion, and the alternative is detecting nothing at all.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_high_fast_score_is_used_when_the_verifier_is_missing() {
+    // 95% from the screening model, fallback at 80%: confident enough to act.
+    let scoring = scan::unverified_fallback(0.95, 0.80).expect("should be used");
+    assert!((scoring.score - 0.95).abs() < 1e-6);
+    assert!(!scoring.verified, "this was not confirmed by the verifier");
+}
+
+#[test]
+fn a_moderate_fast_score_is_discarded_when_the_verifier_is_missing() {
+    // 50% is over the group threshold but under the fallback bar: the screening
+    // model's opinion alone is not confident enough to act on.
+    assert!(scan::unverified_fallback(0.50, 0.80).is_none());
+}
+
+#[test]
+fn a_disabled_fallback_discards_everything() {
+    // fallback = 0.0 reproduces the original behaviour: never trust the fast
+    // score, no matter how high it is.
+    assert!(scan::unverified_fallback(0.99, 0.0).is_none());
+}
+
+/// A score exactly at the fallback threshold is used: the bar is inclusive, so
+/// an operator who sets it to a round number is not surprised by an off-by-one.
+#[test]
+fn the_fallback_threshold_is_inclusive() {
+    assert!(scan::unverified_fallback(0.80, 0.80).is_some());
 }
 
 // ---------------------------------------------------------------------------

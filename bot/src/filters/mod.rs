@@ -52,6 +52,29 @@ filter_ids! {
     F_REPUTATION    => "reputation",
 }
 
+/// Filters whose `unavailable` outcome means a transient *failure to gather a
+/// signal* — a photo that could not be downloaded, a bio the API hid, a
+/// verifier that would not confirm — rather than an operator's deliberate
+/// decision to switch a signal off.
+///
+/// This is the set `handle_message` consults to decide whether a non-match is
+/// safe to cache as clean. It excludes [`F_REPUTATION`], because a group that
+/// turns the shared blocklist off leaves `reputation` permanently `unavailable`,
+/// and that choice must not force the profile to be re-scanned on every
+/// message. It excludes [`F_PROFILE_OCR`] for the same reason: an OCR-disabled
+/// group has chosen to skip the avatar-text signal.
+///
+/// [`F_BIO_KEYWORDS`] and [`F_NAME_PATTERN`] never report `unavailable` (text
+/// always arrives with the message), so listing them would change nothing —
+/// they are omitted to keep the set about failure, not about every consulted
+/// filter.
+pub const DECISIVE_FILTERS: &[&str] = &[
+    F_PROFILE_NSFW,
+    F_MESSAGE_MEDIA,
+    F_BIO_LINK,
+    F_PROFILE_CHANNEL,
+];
+
 /// The data a filter needs. The scanner fetches the union of the needs of the
 /// filters the active policy actually consults, and nothing more.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -181,6 +204,29 @@ impl ScanReport {
     pub fn insert(&mut self, id: &'static str, outcome: FilterOutcome) {
         self.outcomes.insert(id, outcome);
     }
+
+    /// Whether a non-match here is an actual verdict, not a gap in the data.
+    ///
+    /// The caller passes the ids of the filters whose *availability* must hold
+    /// for the verdict to be trusted — a hidden avatar, an unreadable bio, or a
+    /// verifier that could not confirm all leave their filter `unavailable`, and
+    /// such a scan is *inconclusive*, not clean. Caching an inconclusive scan as
+    /// clean would exempt a newcomer from further checks for the whole grace
+    /// window — exactly the "profile photos are ignored" symptom.
+    ///
+    /// Only filters whose absence is a real failure belong here. The signature
+    /// carries the deciding set rather than reusing `Policy::relevant_filters`
+    /// on purpose: a group can opt out of the shared blocklist, making
+    /// `reputation` permanently `unavailable`, and that is a *decision* — not a
+    /// gap in the data, and not a reason to keep re-scanning the profile on
+    /// every message. Likewise an OCR-disabled group leaves `profile_ocr`
+    /// `unavailable` and still wants clean newcomers cached.
+    pub fn definitely_clean(&self, decisive: &[&str]) -> bool {
+        decisive
+            .iter()
+            .filter_map(|id| self.outcomes.get(id))
+            .all(|outcome| outcome.available && !outcome.triggered)
+    }
 }
 
 pub struct FilterRegistry {
@@ -285,5 +331,91 @@ mod tests {
 
         assert!(!report.triggered(F_BIO_LINK));
         assert!(report.triggered_ids().is_empty());
+    }
+
+    fn clean() -> FilterOutcome {
+        FilterOutcome::not_triggered()
+    }
+
+    #[test]
+    fn a_clean_decisive_scan_is_definitely_clean() {
+        let mut report = ScanReport::default();
+        report.insert(F_PROFILE_NSFW, clean());
+        report.insert(F_BIO_LINK, clean());
+        report.insert(F_PROFILE_CHANNEL, clean());
+
+        assert!(report.definitely_clean(DECISIVE_FILTERS));
+    }
+
+    /// The regression this exists to catch: a transient detector failure leaves
+    /// `profile_nsfw` `unavailable`, and that scan must not be cached as clean
+    /// — otherwise a spammer whose avatar was never scored skips every check
+    /// for the rest of the grace window.
+    #[test]
+    fn an_unavailable_decisive_signal_is_not_definitely_clean() {
+        let mut report = ScanReport::default();
+        report.insert(F_PROFILE_NSFW, FilterOutcome::unavailable());
+        report.insert(F_BIO_LINK, clean());
+
+        assert!(
+            !report.definitely_clean(DECISIVE_FILTERS),
+            "an unreadable avatar must not read as clean"
+        );
+    }
+
+    /// A group that turns the shared blocklist off leaves `reputation`
+    /// permanently `unavailable`; that is a decision, not a gap in the data,
+    /// and it must not force the profile to be re-scanned on every message.
+    /// `reputation` is deliberately not in `DECISIVE_FILTERS`.
+    #[test]
+    fn an_unavailable_reputation_does_not_block_caching() {
+        let mut report = ScanReport::default();
+        report.insert(F_PROFILE_NSFW, clean());
+        report.insert(F_BIO_LINK, clean());
+        report.insert(F_PROFILE_CHANNEL, clean());
+        report.insert(F_REPUTATION, FilterOutcome::unavailable());
+
+        assert!(
+            report.definitely_clean(DECISIVE_FILTERS),
+            "an opted-out reputation signal must not block caching"
+        );
+    }
+
+    /// Symmetric to the reputation case: an OCR-disabled group has chosen to
+    /// skip the avatar-text signal and still wants clean newcomers cached.
+    #[test]
+    fn an_unavailable_ocr_signal_does_not_block_caching() {
+        let mut report = ScanReport::default();
+        report.insert(F_PROFILE_NSFW, clean());
+        report.insert(F_BIO_LINK, clean());
+        report.insert(F_PROFILE_OCR, FilterOutcome::unavailable());
+
+        assert!(report.definitely_clean(DECISIVE_FILTERS));
+    }
+
+    /// A decisive filter that *fired* is not a clean result — the caller still
+    /// has a match to enforce, so caching here is moot. The method defends
+    /// against it anyway so the contract is unambiguous.
+    #[test]
+    fn a_triggered_decisive_signal_is_not_clean() {
+        let mut report = ScanReport::default();
+        report.insert(F_PROFILE_NSFW, FilterOutcome::triggered(0.95, None));
+
+        assert!(!report.definitely_clean(DECISIVE_FILTERS));
+    }
+
+    /// A decisive filter the caller never gathered reports no outcome at all,
+    /// not an `unavailable` one. That is also not a clean verdict: the scan did
+    /// not answer the question, and skipping the cache keeps the door open for a
+    /// later message that does.
+    #[test]
+    fn a_missing_decisive_signal_is_not_definitely_clean() {
+        let mut report = ScanReport::default();
+        report.insert(F_BIO_LINK, clean());
+
+        assert!(
+            !report.definitely_clean(DECISIVE_FILTERS),
+            "no profile_nsfw outcome means the avatar was not checked"
+        );
     }
 }

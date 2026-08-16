@@ -44,6 +44,14 @@ pub struct Config {
     pub test_mode_rate_per_min: u32,
     pub broadcast_rate_per_sec: u32,
     pub global_reputation_min_bans: i64,
+    /// When the verifier is unreachable, the fast model's score is normally
+    /// discarded entirely — better to miss a spammer than to ban an anime
+    /// fan. This threshold is the exception: a fast score *above* it is
+    /// confident enough to act on without a second opinion. 0.0 disables
+    /// the fallback (the pre-existing behaviour); 0.80 is a sensible default
+    /// that catches the obvious cases without the false positives the
+    /// verifier was added to prevent.
+    pub verifier_fallback_threshold: f32,
 }
 
 /// Seed values for a group the bot has just been added to. Once a group row
@@ -157,6 +165,10 @@ impl Config {
             test_mode_rate_per_min: num("TEST_MODE_RATE_PER_MIN", 10)?,
             broadcast_rate_per_sec: num("BROADCAST_RATE_PER_SEC", 25)?.max(1),
             global_reputation_min_bans: num("GLOBAL_REPUTATION_MIN_BANS", 3)?,
+            verifier_fallback_threshold: {
+                let pct = num::<i16>("VERIFIER_FALLBACK_THRESHOLD", 80)?;
+                f32::from(pct.clamp(0, 100)) / 100.0
+            },
         })
     }
 

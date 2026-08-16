@@ -108,6 +108,31 @@ Tuning: `VERIFIER_MODEL_ID` picks the model (empty builds without one),
 `ENABLE_VERIFIER=false` turns the stage off, and `scripts/eval_images.sh` now
 prints both columns side by side with the verifier's per-label breakdown.
 
+### Changed — a missing verifier no longer blanks out every image
+
+The two-stage design carried a hard rule: when the verifier was unreachable or
+not loaded, a flagged image produced **no signal at all**. That was intentional
+— falling back to the fast score would quietly reinstate the anime false
+positives the verifier exists to catch. But the other half of that bargain —
+"CI asserts the verifier is loaded" — only protects a freshly built image. In
+the field a missing verifier looks identical to a quiet one: the bot stops
+detecting, bans nobody and reports nothing, as if it were ignoring every
+profile photo and every sent picture. Which is what was being reported.
+
+So the rule is now *graduated* rather than absolute, controlled by
+`VERIFIER_FALLBACK_THRESHOLD` (default 80, percent, 0 disables the fallback and
+restores the previous behaviour):
+
+- A fast score **above** the fallback bar is confident enough to act on alone.
+  The fast model over-flags art, but a 95% verdict is not an anime avatar, and
+  silently detecting nothing is a worse failure than occasionally trusting the
+  screening model on its own.
+- A fast score **below** the bar is still discarded, exactly as before — that
+  is the band where the over-flagging the verifier prevents actually happens.
+
+The logged warnings make the two states distinguishable: a verifier that is
+genuinely down still announces itself, instead of the image layer going mute.
+
 ### Added
 
 - **`profile_channel` — the channel attached to a profile now counts as
