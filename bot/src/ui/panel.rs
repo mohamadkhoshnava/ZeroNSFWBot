@@ -113,6 +113,12 @@ pub async fn render(
             settings.delete_bot_messages,
             CallbackAction::ToggleAutoDelete,
         ),
+        PanelView::BotGuard => simple_toggle(
+            lang,
+            t!(lang, "botguard_title"),
+            settings.ban_foreign_bots,
+            CallbackAction::ToggleBotGuard,
+        ),
         PanelView::Media => media(settings, lang),
         PanelView::MediaKinds => media_kinds(settings, lang),
         PanelView::MediaThreshold => media_threshold(settings, lang),
@@ -211,6 +217,10 @@ fn main_keyboard(lang: Lang) -> InlineKeyboardMarkup {
                 CallbackAction::Panel(PanelView::Lang),
             ),
         ],
+        vec![button(
+            t!(lang, "panel_btn_botguard"),
+            CallbackAction::Panel(PanelView::BotGuard),
+        )],
         vec![
             button(t!(lang, "panel_btn_reset"), CallbackAction::Reset),
             button(t!(lang, "btn_close"), CallbackAction::Close),

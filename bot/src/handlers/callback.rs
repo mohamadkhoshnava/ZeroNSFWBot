@@ -325,6 +325,12 @@ async fn apply(
             PanelView::AutoDelete
         }
 
+        ToggleBotGuard => {
+            db::groups::toggle_flag(&app.db, chat_id, db::groups::BoolColumn::BanForeignBots)
+                .await?;
+            PanelView::BotGuard
+        }
+
         SetGrace(value) => {
             db::groups::set_grace(&app.db, chat_id, value).await?;
             PanelView::Grace

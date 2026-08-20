@@ -1,5 +1,6 @@
 //! Update routing.
 
+pub mod botguard;
 pub mod callback;
 pub mod commands;
 pub mod group;
@@ -30,4 +31,9 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
         .branch(messages)
         .branch(Update::filter_callback_query().endpoint(callback::handle))
         .branch(Update::filter_my_chat_member().endpoint(member::handle_my_chat_member))
+        // Someone else's membership changing. Registering this is what makes
+        // teloxide ask Telegram for `chat_member` updates at all, which is the
+        // only way to see a bot that arrived through an invite link rather than
+        // being added by a member.
+        .branch(Update::filter_chat_member().endpoint(botguard::on_chat_member))
 }

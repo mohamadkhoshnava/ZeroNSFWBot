@@ -17,8 +17,8 @@ macro_rules! group_columns {
         "chat_id, title, username, lang, lang_locked, threshold, policy, \
          custom_filters, nsfw_categories, action, dry_run, grace_messages, delete_bot_messages, \
          bot_message_ttl_secs, global_blocklist, media_scan, media_threshold, \
-         media_action, media_kinds, media_frames, member_count, is_active, \
-         added_at, updated_at"
+         media_action, media_kinds, media_frames, ban_foreign_bots, \
+         member_count, is_active, added_at, updated_at"
     };
 }
 
@@ -38,8 +38,8 @@ pub async fn get_or_create(
         "INSERT INTO groups (chat_id, title, lang, threshold, policy, action, ",
         "                    dry_run, grace_messages, delete_bot_messages, ",
         "                    bot_message_ttl_secs, media_scan, media_threshold, ",
-        "                    media_action, media_frames) ",
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ",
+        "                    media_action, media_frames, ban_foreign_bots) ",
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) ",
         "ON CONFLICT (chat_id) DO UPDATE ",
         "    SET title      = COALESCE(EXCLUDED.title, groups.title), ",
         "        is_active  = TRUE, ",
@@ -61,6 +61,7 @@ pub async fn get_or_create(
     .bind(defaults.media_threshold)
     .bind(defaults.media_action.as_str())
     .bind(defaults.media_frames)
+    .bind(defaults.ban_foreign_bots)
     .fetch_one(pool)
     .await?;
 
@@ -204,6 +205,7 @@ pub enum BoolColumn {
     DeleteBotMessages,
     GlobalBlocklist,
     MediaScan,
+    BanForeignBots,
 }
 
 impl BoolColumn {
@@ -213,6 +215,7 @@ impl BoolColumn {
             BoolColumn::DeleteBotMessages => "delete_bot_messages",
             BoolColumn::GlobalBlocklist => "global_blocklist",
             BoolColumn::MediaScan => "media_scan",
+            BoolColumn::BanForeignBots => "ban_foreign_bots",
         }
     }
 }
@@ -238,7 +241,7 @@ pub async fn reset(pool: &PgPool, chat_id: i64, defaults: &GroupDefaults) -> Res
             bot_message_ttl_secs = $8, global_blocklist = TRUE,
             media_scan = $9, media_threshold = $10, media_action = $11,
             media_kinds = '["photo", "animation", "sticker", "video"]',
-            media_frames = $12, updated_at = now()
+            media_frames = $12, ban_foreign_bots = $13, updated_at = now()
         WHERE chat_id = $1
         "#,
     )
@@ -254,6 +257,7 @@ pub async fn reset(pool: &PgPool, chat_id: i64, defaults: &GroupDefaults) -> Res
     .bind(defaults.media_threshold)
     .bind(defaults.media_action.as_str())
     .bind(defaults.media_frames)
+    .bind(defaults.ban_foreign_bots)
     .execute(pool)
     .await?;
     Ok(())

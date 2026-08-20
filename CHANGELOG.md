@@ -6,6 +6,42 @@ Notable changes to ZeroNSFWBot. Format follows
 
 ## [Unreleased]
 
+### Added — banning the bots nobody promoted
+
+Every filter in this project answers a question about a *person*: is this avatar
+explicit, does this bio sell something, has this account been banned elsewhere.
+A spam bot answers none of them. Its avatar is a logo, its bio is empty, its
+name is unremarkable and its messages are plain text advertising, so there is no
+image to score and no threshold that could ever fire. Groups were left removing
+them by hand.
+
+The signal that does hold is structural rather than content-based: **an
+automation a group actually wanted is one an admin promoted.** So `/nsfw → 🤖
+Ban unpromoted bots` bans any bot that arrives without administrator rights, and
+a bot you want is one promotion away from being left alone permanently.
+
+Off by default, and deliberately so — plenty of groups run an unpromoted helper
+bot quite happily, and inheriting a rule that deletes it would be a nasty
+surprise. `DEFAULT_BAN_FOREIGN_BOTS` sets what new groups start with.
+
+Two things follow from how Telegram works, and both are limits worth stating
+rather than bugs to fix later:
+
+- **It acts on arrival, not on behaviour.** Telegram never delivers one bot's
+  messages to another, so waiting for a spam bot to post is not an option — the
+  update is not ours to receive. The switch watches the `new_chat_members`
+  service message (sent by the human who did the adding) and `chat_member`
+  updates (which cover an invite link). Registering the latter is also what
+  makes teloxide ask Telegram for that update type at all.
+- **It cannot sweep bots that were already there.** There is no "list members"
+  call to enumerate them with, so turning the switch on affects arrivals from
+  that moment onward.
+
+`AdminSnapshot` now keeps promoted bots in their own `admin_bot_ids` list.
+`is_admin` deliberately never counted them — it means "a human who can moderate
+here" — and conflating the two to serve this feature would have quietly changed
+who the settings panel answers to.
+
 ### Added — scanning the media posted in a group
 
 Until now the bot only ever looked at a picture as evidence *about an account*.

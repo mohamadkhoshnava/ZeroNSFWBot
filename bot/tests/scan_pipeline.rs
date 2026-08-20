@@ -29,6 +29,7 @@ fn defaults() -> GroupDefaults {
         media_threshold: 90,
         media_action: Action::Delete,
         media_frames: 5,
+        ban_foreign_bots: false,
     }
 }
 

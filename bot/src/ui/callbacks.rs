@@ -35,12 +35,14 @@ pub enum PanelView {
     Grace,
     Global,
     AutoDelete,
+    /// Banning bots nobody promoted — not a scan setting, its own switch.
+    BotGuard,
 }
 
 impl PanelView {
     /// Every screen. Adding a variant without linking to it from the main panel
     /// fails `panel::tests::every_panel_view_is_reachable_from_the_main_screen`.
-    pub const ALL: [PanelView; 13] = [
+    pub const ALL: [PanelView; 14] = [
         PanelView::Main,
         PanelView::Threshold,
         PanelView::Policy,
@@ -54,6 +56,7 @@ impl PanelView {
         PanelView::Grace,
         PanelView::Global,
         PanelView::AutoDelete,
+        PanelView::BotGuard,
     ];
 
     const fn code(self) -> &'static str {
@@ -76,6 +79,7 @@ impl PanelView {
             PanelView::Grace => "gr",
             PanelView::Global => "gl",
             PanelView::AutoDelete => "ad",
+            PanelView::BotGuard => "bg",
         }
     }
 
@@ -99,6 +103,7 @@ impl PanelView {
             "gr" => PanelView::Grace,
             "gl" => PanelView::Global,
             "ad" => PanelView::AutoDelete,
+            "bg" => PanelView::BotGuard,
             _ => return None,
         })
     }
@@ -151,6 +156,8 @@ pub enum CallbackAction {
     ToggleDryRun,
     ToggleGlobal,
     ToggleAutoDelete,
+    /// Turn "ban bots nobody promoted" on or off.
+    ToggleBotGuard,
     SetGrace(i32),
 
     /// Turn the group media scan on or off.
@@ -200,6 +207,7 @@ impl CallbackAction {
             CallbackAction::ToggleDryRun => "p:drt".to_owned(),
             CallbackAction::ToggleGlobal => "p:glt".to_owned(),
             CallbackAction::ToggleAutoDelete => "p:adt".to_owned(),
+            CallbackAction::ToggleBotGuard => "p:bgt".to_owned(),
             CallbackAction::SetGrace(n) => format!("p:grs:{n}"),
             CallbackAction::ToggleMediaScan => "p:met".to_owned(),
             CallbackAction::AdjustMediaThreshold(delta) => format!("p:mtd:{delta}"),
@@ -246,6 +254,7 @@ impl CallbackAction {
             ["p", "drt"] => CallbackAction::ToggleDryRun,
             ["p", "glt"] => CallbackAction::ToggleGlobal,
             ["p", "adt"] => CallbackAction::ToggleAutoDelete,
+            ["p", "bgt"] => CallbackAction::ToggleBotGuard,
             ["p", "grs", n] => CallbackAction::SetGrace(n.parse().ok()?),
             ["p", "met"] => CallbackAction::ToggleMediaScan,
             ["p", "mtd", delta] => CallbackAction::AdjustMediaThreshold(delta.parse().ok()?),

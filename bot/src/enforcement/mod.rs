@@ -11,7 +11,7 @@
 //!   exists — i.e. when deletion failed. Replying to a message the bot just
 //!   deleted would leave a dangling quote.
 
-mod ephemeral;
+pub mod ephemeral;
 
 use std::sync::Arc;
 

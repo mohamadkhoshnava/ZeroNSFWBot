@@ -86,6 +86,7 @@ panel_btn_grace = "🛡 Grace window"
 panel_btn_global = "🌍 Shared blocklist"
 panel_btn_autodelete = "🧹 Clean up my messages"
 panel_btn_media = "🖼 Media scan"
+panel_btn_botguard = "🤖 Ban unpromoted bots"
 panel_btn_reset = "♻️ Reset to defaults"
 panel_reset_done = "♻️ Settings restored to defaults."
 
@@ -139,6 +140,9 @@ grace_value = "first {count} messages"
 global_title = "🌍 <b>Shared blocklist</b>\n\nWhen enabled, accounts banned for NSFW advertising in at least {count} other groups are flagged here too, and this group's bans contribute back."
 
 autodelete_title = "🧹 <b>Clean up my messages</b>\n\nDelete my own reports from the chat after {ttl} seconds. Off by default so the group can see what I removed."
+
+botguard_title = "🤖 <b>Ban unpromoted bots</b>\n\nBan any bot added here that is not an administrator. Advertising bots carry no NSFW signal at all — no avatar, no bio, just text — so no threshold can catch them; what gives them away is that nobody promoted them.\n\nA bot you actually want is one tap away: make it an admin and it is left alone. Off by default, and it only sees bots that arrive from now on."
+botguard_banned = "🤖 Banned {bot} — a bot nobody made an admin here."
 
 # ------------------------------------------------------------ media scan --
 media_title = """🖼 <b>Media scan</b> — <b>{state}</b>

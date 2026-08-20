@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use teloxide::types::Message;
 
-use crate::{App, Tg, db, enforcement, filters, i18n, media, policy, scan};
+use crate::{App, Tg, db, enforcement, filters, handlers::botguard, i18n, media, policy, scan};
 
 pub async fn handle_message(bot: Tg, msg: Message, app: Arc<App>) -> anyhow::Result<()> {
     if let Err(err) = scan_message(&bot, &msg, &app).await {
@@ -22,6 +22,12 @@ async fn scan_message(bot: &Tg, msg: &Message, app: &Arc<App>) -> anyhow::Result
     if !(msg.chat.is_group() || msg.chat.is_supergroup()) {
         return Ok(());
     }
+
+    // Checked before the sender filters below, and on its own terms: this is
+    // about who was *added*, not about who sent the service message announcing
+    // it. Telegram never delivers a bot's own messages to another bot, so an
+    // arrival is the only moment a spam bot is visible to us at all.
+    botguard::on_new_members(bot, msg, app).await?;
 
     // No `from` means an anonymous admin or a channel posting as itself —
     // neither is a spam account with a profile to scan.

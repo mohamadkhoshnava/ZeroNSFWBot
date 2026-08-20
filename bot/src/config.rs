@@ -71,6 +71,10 @@ pub struct GroupDefaults {
     pub media_action: Action,
     /// Stills sampled per animation or clip.
     pub media_frames: i16,
+    /// Whether new groups start by banning bots nobody promoted. Off: a group
+    /// running its own unpromoted helper bot should not inherit a rule that
+    /// removes it.
+    pub ban_foreign_bots: bool,
 }
 
 impl Config {
@@ -150,6 +154,7 @@ impl Config {
                 media_action: parsed("DEFAULT_MEDIA_ACTION", Action::Delete)?,
                 media_frames: num::<i16>("DEFAULT_MEDIA_FRAMES", 5)?
                     .clamp(1, crate::db::models::MAX_MEDIA_FRAMES),
+                ban_foreign_bots: flag("DEFAULT_BAN_FOREIGN_BOTS", false),
             },
 
             scan_cache_ttl: Duration::from_secs(num("SCAN_CACHE_TTL_SECS", 86_400)?),

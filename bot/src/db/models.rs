@@ -40,6 +40,7 @@ pub struct GroupRow {
     pub media_action: String,
     pub media_kinds: serde_json::Value,
     pub media_frames: i16,
+    pub ban_foreign_bots: bool,
     pub member_count: i32,
     pub is_active: bool,
     pub added_at: DateTime<Utc>,
@@ -166,6 +167,15 @@ pub struct GroupSettings {
     pub media_kinds: Vec<MediaKind>,
     /// Stills sampled across an animation or clip.
     pub media_frames: i16,
+
+    /// Whether bots nobody promoted are banned on sight.
+    ///
+    /// Not an NSFW signal at all, which is why it is its own switch rather than
+    /// a filter: an advertising bot has a logo for an avatar and an empty bio,
+    /// so every image and text filter in the policy is blind to it. The one
+    /// thing that separates a wanted bot from an unwanted one is whether an
+    /// admin promoted it.
+    pub ban_foreign_bots: bool,
 }
 
 impl GroupSettings {
@@ -205,6 +215,7 @@ impl GroupSettings {
             media_action: defaults.media_action,
             media_kinds: default_media_kinds(),
             media_frames: defaults.media_frames,
+            ban_foreign_bots: defaults.ban_foreign_bots,
         }
     }
 }
@@ -241,6 +252,7 @@ impl From<GroupRow> for GroupSettings {
                 .filter_map(|name| name.parse().ok())
                 .collect(),
             media_frames: row.media_frames.clamp(1, MAX_MEDIA_FRAMES),
+            ban_foreign_bots: row.ban_foreign_bots,
         }
     }
 }
@@ -398,6 +410,7 @@ mod tests {
             media_action: media_action.into(),
             media_kinds,
             media_frames,
+            ban_foreign_bots: false,
             member_count: 0,
             is_active: true,
             added_at: now,
