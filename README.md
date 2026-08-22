@@ -148,10 +148,17 @@ an anime avatar is not pornography, but a two-class model has nowhere to put it.
 
 So anything it flags is re-scored by the verifier, and **only the verified score
 is acted on**. The verifier is worth its cost less for the extra parameters than
-for the taxonomy: `drawings` and `sexy` are separate classes from `hentai` and
-`porn`, so it can say *this is a drawing* instead of *this is explicit*. Only
-`hentai` and `porn` count towards the NSFW total — explicit anime is still
-caught, ordinary anime is not.
+for the taxonomy: `drawings` is a separate class from `hentai`, so it can say
+*this is a drawing* instead of *this is explicit*. By default `porn`, `hentai`
+and `sexy` count towards the NSFW total and `drawings` and `neutral` do not —
+explicit anime is still caught, ordinary anime is not.
+
+`sexy` is in the default set because that is the class the accounts this bot
+exists to catch actually land in: an avatar explicit enough to score `porn` is
+one Telegram removes on its own, so the advertising is done with lingerie, which
+the verifier scores `sexy 99% / porn 1%`. Groups that want a racy avatar left
+alone are already covered by the default preset, which needs advertising next to
+the image before it acts. Each group can change the set from the panel.
 
 Both stages compare against the same per-group threshold. The second stage can
 only ever *clear* someone the first stage flagged, never convict on its own.

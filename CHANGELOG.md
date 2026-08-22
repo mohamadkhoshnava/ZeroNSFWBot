@@ -6,6 +6,35 @@ Notable changes to ZeroNSFWBot. Format follows
 
 ## [Unreleased]
 
+### Fixed — the profile scan had been off since the cascade landed
+
+The two-stage pipeline shipped with `porn` + `hentai` as the classes a group
+counts as NSFW, on the reasoning that `sexy` was one of the two buckets that had
+made the single-model pipeline unusable. That reasoning was about the *screening*
+model's failure mode and did not survive contact with the verifier's taxonomy.
+
+`porn` is what the verifier calls hardcore pornography, and an avatar that
+explicit is one Telegram removes without our help. The accounts this bot exists
+to catch advertise with lingerie and cleavage, and the verifier scores those
+`sexy 99% / porn 1%`. So the second stage was taking profiles the screening model
+had flagged at over 90% and handing back a group score under 1%.
+
+The result was not a stricter filter but a disabled one: `profile_nsfw` did not
+fire once in any group between the cascade going live and this fix, while the
+same avatars kept being flagged at stage one and cleared at stage two. Every
+detection in that window came from `message_media`, which has its own scoring
+path and was unaffected.
+
+`sexy` is now in the default set. `drawings` still is not — sparing stylised art
+is what the verifier was added for, and that part worked. Groups that had already
+picked their own categories keep them; migration `0006` moves only the untouched
+default. A group that wants racy avatars ignored can drop the class from the
+panel, though the default preset already declines to act on an image with no
+advertising beside it.
+
+`/reset` now binds the default set instead of repeating it as a SQL literal,
+which is how the old value outlived the code that named it.
+
 ### Added — banning the bots nobody promoted
 
 Every filter in this project answers a question about a *person*: is this avatar

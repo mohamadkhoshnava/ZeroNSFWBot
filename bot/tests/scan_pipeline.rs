@@ -541,10 +541,13 @@ fn category_matching_ignores_case() {
     assert!((scoring.score - 0.8).abs() < 1e-5);
 }
 
-/// End to end: a group that counts `sexy` bans the avatar the default group
-/// cleared. Same image, same models, different policy.
+/// End to end: the avatar the spam accounts actually use.
+///
+/// `sexy 96% / porn 1%` is not a corner case, it is the shape of nearly every
+/// profile this bot is pointed at — so it has to be caught out of the box, and
+/// a group that disagrees has to be able to say so.
 #[tokio::test]
-async fn a_group_that_counts_sexy_acts_on_a_suggestive_avatar() {
+async fn a_suggestive_avatar_counts_by_default_and_can_be_opted_out_of() {
     let breakdown = vec![("sexy".to_string(), 0.96), ("porn".to_string(), 0.01)];
 
     let mut ctx = clean_context();
@@ -555,20 +558,23 @@ async fn a_group_that_counts_sexy_acts_on_a_suggestive_avatar() {
         &ctx.settings.nsfw_categories,
     ));
 
-    let (_, verdict) = run(&ctx).await;
-    assert!(!verdict.matched, "the default categories exclude `sexy`");
+    let (report, verdict) = run(&ctx).await;
+    assert!(report.triggered("profile_nsfw"));
+    assert!(
+        verdict.matched,
+        "the default categories have to include `sexy`"
+    );
 
-    ctx.settings.nsfw_categories = vec!["porn".into(), "hentai".into(), "sexy".into()];
+    ctx.settings.nsfw_categories = vec!["porn".into(), "hentai".into()];
     ctx.profile_nsfw = Some(ImageScoring::verified(
         0.94,
         breakdown,
         &ctx.settings.nsfw_categories,
     ));
 
-    let (report, verdict) = run(&ctx).await;
-    assert!(report.triggered("profile_nsfw"));
+    let (_, verdict) = run(&ctx).await;
     assert!(
-        verdict.matched,
-        "this group asked for suggestive avatars to count"
+        !verdict.matched,
+        "this group asked for suggestive avatars to be left alone"
     );
 }

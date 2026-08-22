@@ -49,11 +49,20 @@ pub struct GroupRow {
 
 /// Classes counted as NSFW when a group has never chosen.
 ///
-/// `sexy` and `drawings` are deliberately out: they are the two buckets that
-/// made the single-model pipeline unusable, and a group that wants them can say
-/// so explicitly.
+/// `drawings` is deliberately out: it is the bucket that made the single-model
+/// pipeline unusable, and stylised art is exactly what the verifier was added
+/// to spare. A group that wants it can say so explicitly.
+///
+/// `sexy` is in, and has to be. The accounts this bot exists to catch do not
+/// advertise with pornography — an avatar explicit enough to score `porn` is
+/// one Telegram itself removes. They advertise with lingerie and cleavage,
+/// which the verifier calls `sexy` at 99% and `porn` at under 1%. Leaving the
+/// class out did not make the profile filter stricter, it switched the filter
+/// off: across every group, `profile_nsfw` stopped firing entirely the day the
+/// second stage went live. Groups that want a racy avatar left alone are still
+/// served by the default preset, which needs advertising alongside the image.
 pub fn default_nsfw_categories() -> Vec<String> {
-    vec!["porn".to_owned(), "hentai".to_owned()]
+    vec!["porn".to_owned(), "hentai".to_owned(), "sexy".to_owned()]
 }
 
 /// Ceiling on the frames sampled per clip.

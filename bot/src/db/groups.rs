@@ -236,7 +236,7 @@ pub async fn reset(pool: &PgPool, chat_id: i64, defaults: &GroupDefaults) -> Res
         r#"
         UPDATE groups
         SET threshold = $2, policy = $3, action = $4, custom_filters = '[]',
-            nsfw_categories = '["porn", "hentai"]',
+            nsfw_categories = $14,
             dry_run = $5, grace_messages = $6, delete_bot_messages = $7,
             bot_message_ttl_secs = $8, global_blocklist = TRUE,
             media_scan = $9, media_threshold = $10, media_action = $11,
@@ -258,6 +258,10 @@ pub async fn reset(pool: &PgPool, chat_id: i64, defaults: &GroupDefaults) -> Res
     .bind(defaults.media_action.as_str())
     .bind(defaults.media_frames)
     .bind(defaults.ban_foreign_bots)
+    // Bound rather than written inline so a change to the default set reaches
+    // /reset too. The literal that used to live here is how the old default
+    // outlived the code that named it.
+    .bind(serde_json::json!(super::models::default_nsfw_categories()))
     .execute(pool)
     .await?;
     Ok(())
