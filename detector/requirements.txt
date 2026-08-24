@@ -1,7 +1,7 @@
 # Runtime dependencies only — torch/timm live in the build stage.
 fastapi==0.141.1
 uvicorn[standard]==0.52.1
-onnxruntime==1.28.0
+onnxruntime==1.29.0
 pillow==12.3.0
 numpy==2.5.1
 pydantic==2.13.4
