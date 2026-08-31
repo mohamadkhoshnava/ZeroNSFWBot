@@ -4,5 +4,5 @@ uvicorn[standard]==0.52.1
 onnxruntime==1.28.0
 pillow==12.3.0
 numpy==2.5.1
-pydantic==2.13.4
+pydantic==2.13.5
 pytesseract==0.3.13
