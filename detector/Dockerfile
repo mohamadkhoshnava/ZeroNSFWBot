@@ -2,7 +2,7 @@
 # Stage 1 — export the model to ONNX.
 # torch + timm are ~1 GB; none of it reaches the final image.
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS exporter
+FROM python:3.14-slim AS exporter
 
 # The fast screening model, run on every image the bot scans.
 ARG MODEL_ID=Marqo/nsfw-image-detection-384
@@ -37,7 +37,7 @@ RUN if [ -n "${VERIFIER_MODEL_ID}" ]; then \
 # ---------------------------------------------------------------------------
 # Stage 2 — runtime. onnxruntime only.
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 ARG ENABLE_OCR=true
 # ffmpeg, for sampling frames out of GIFs-as-MP4 and video stickers. Telegram
