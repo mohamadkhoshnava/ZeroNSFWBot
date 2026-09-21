@@ -14,22 +14,20 @@ use zeronsfw_bot::{
     scan::{ImageScoring, LinkedChannel, PersonalChannel, PhotoAccess, ScanContext},
 };
 
+/// The shipped defaults, named explicitly where a test depends on the value.
+///
+/// Spelled with `..Default::default()` rather than field by field so adding a
+/// setting does not mean editing every fixture in the suite — which is exactly
+/// what made these two files break the day the text scan landed.
 fn defaults() -> GroupDefaults {
     GroupDefaults {
         lang: Lang::En,
         threshold: 40,
         policy: Policy::NsfwAndContact,
         action: Action::Ban,
-        profile_photos_to_scan: 2,
-        dry_run: false,
-        grace_messages: 5,
-        delete_bot_messages: false,
-        bot_message_ttl_secs: 60,
-        media_scan: false,
         media_threshold: 90,
         media_action: Action::Delete,
-        media_frames: 5,
-        ban_foreign_bots: false,
+        ..GroupDefaults::default()
     }
 }
 
@@ -44,6 +42,10 @@ fn clean_context() -> ScanContext {
         photos: PhotoAccess::Visible,
         profile_nsfw: Some(ImageScoring::screened(0.02)),
         avatar_text: None,
+        // No answer from Jev — the bio-semantic filter reports itself
+        // unavailable, which is the state every deployment without an API key
+        // is in.
+        profile_ad: None,
         message_nsfw: None,
         other_group_bans: Some(0),
         settings: GroupSettings::defaults(-1001, &defaults()),
@@ -577,4 +579,107 @@ async fn a_suggestive_avatar_counts_by_default_and_can_be_opted_out_of() {
         !verdict.matched,
         "this group asked for suggestive avatars to be left alone"
     );
+}
+
+// ---------------------------------------------- the semantic profile filter --
+
+/// A profile whose bio the word list has no entry for, but which Jev reads as
+/// an advertisement. This is the whole reason the filter exists: obfuscated
+/// spelling, new slang, and bios that sell without using a listed word.
+fn obfuscated_advertiser() -> ScanContext {
+    let mut ctx = clean_context();
+    ctx.bio = Some("💋 ویدیو اختصاصی · تعرفه پیوی".into());
+    ctx.profile_ad = Some(0.94);
+    ctx
+}
+
+#[tokio::test]
+async fn a_bio_the_word_list_misses_can_still_be_caught() {
+    let mut ctx = obfuscated_advertiser();
+    ctx.settings.policy = Policy::NsfwOrKeywords;
+
+    let (report, verdict) = run(&ctx).await;
+    assert!(
+        !report.triggered("bio_keywords"),
+        "this fixture is only meaningful while the word list misses it"
+    );
+    assert!(report.triggered("bio_semantic"));
+    assert!(verdict.matched);
+}
+
+/// Without an API key every deployment sees `None`, and the filter has to
+/// report itself unavailable rather than clean — otherwise a Jev outage would
+/// quietly read as "this profile is fine".
+#[tokio::test]
+async fn no_answer_is_never_treated_as_a_clean_profile() {
+    let mut ctx = obfuscated_advertiser();
+    ctx.settings.policy = Policy::NsfwOrKeywords;
+    ctx.profile_ad = None;
+
+    let (report, verdict) = run(&ctx).await;
+    let outcome = report.get("bio_semantic").expect("the filter always runs");
+    assert!(!outcome.available);
+    assert!(!outcome.triggered);
+    assert!(!verdict.matched);
+}
+
+/// A merely suggestive profile is not an advertisement, and the bot has never
+/// existed to remove people for being flirtatious.
+#[tokio::test]
+async fn a_suggestive_profile_is_not_an_advertisement() {
+    let mut ctx = clean_context();
+    ctx.settings.policy = Policy::NsfwOrKeywords;
+    ctx.profile_ad = Some(0.45);
+
+    let (_, verdict) = run(&ctx).await;
+    assert!(!verdict.matched);
+}
+
+/// `strict` needs two *independent* signals. The model fires on exactly the
+/// bios the word list was written for, so counting both would reach the bar
+/// from one fact — the same defect that once banned a user over a bio link and
+/// the identical link read off their avatar.
+#[tokio::test]
+async fn strict_does_not_count_the_word_list_and_the_model_separately() {
+    let mut ctx = clean_context();
+    ctx.settings.policy = Policy::Strict;
+    ctx.bio = Some("best porn channel, join".into());
+    ctx.profile_ad = Some(0.97);
+    ctx.profile_nsfw = Some(ImageScoring::screened(0.01));
+    ctx.personal_channel = PersonalChannel::Absent;
+
+    let (report, verdict) = run(&ctx).await;
+    assert!(report.triggered("bio_keywords") && report.triggered("bio_semantic"));
+    assert!(
+        !verdict.matched,
+        "two readings of the same bio are one signal, not two"
+    );
+}
+
+/// But paired with a genuinely different signal it does convict.
+#[tokio::test]
+async fn strict_acts_on_the_model_plus_an_independent_signal() {
+    let mut ctx = clean_context();
+    ctx.settings.policy = Policy::Strict;
+    ctx.profile_ad = Some(0.97);
+    ctx.personal_channel = PersonalChannel::Linked(LinkedChannel {
+        title: Some("Hot Videos".into()),
+        username: Some("hotvids".into()),
+    });
+
+    let (_, verdict) = run(&ctx).await;
+    assert!(verdict.matched);
+}
+
+/// The default preset is the one most groups run, and it has always required
+/// an NSFW *image*. A text judgement, however confident, must not change that.
+#[tokio::test]
+async fn the_default_preset_still_needs_an_image() {
+    let mut ctx = clean_context();
+    ctx.profile_ad = Some(0.99);
+    ctx.profile_nsfw = Some(ImageScoring::screened(0.01));
+
+    let (_, verdict) = run(&ctx).await;
+    assert_eq!(ctx.settings.policy, Policy::NsfwAndContact);
+    assert!(!verdict.matched);
 }

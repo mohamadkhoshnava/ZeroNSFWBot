@@ -13,7 +13,7 @@ use crate::{
     App,
     db::{
         self,
-        models::{GroupSettings, MediaKind},
+        models::{GroupSettings, MediaKind, TextTopic},
     },
     filters::ALL_FILTERS,
     i18n::Lang,
@@ -58,6 +58,29 @@ fn media_label(lang: Lang, settings: &GroupSettings) -> String {
         return t!(lang, "state_off");
     }
     t!(lang, "media_state_on", threshold = settings.media_threshold)
+}
+
+/// The text scan in one line: off, or on with the number that governs it.
+fn text_label(lang: Lang, settings: &GroupSettings) -> String {
+    if !settings.text_scan {
+        return t!(lang, "state_off");
+    }
+    if settings.text_topics.is_empty() {
+        return t!(lang, "text_state_empty");
+    }
+    t!(
+        lang,
+        "text_state_on",
+        count = settings.text_topics.len(),
+        threshold = settings.text_threshold
+    )
+}
+
+fn ad_label(lang: Lang, settings: &GroupSettings) -> String {
+    if !settings.ad_scan {
+        return t!(lang, "state_off");
+    }
+    t!(lang, "ad_state_on", threshold = settings.ad_threshold)
 }
 
 fn grace_label(lang: Lang, grace: i32) -> String {
@@ -119,6 +142,19 @@ pub async fn render(
             settings.ban_foreign_bots,
             CallbackAction::ToggleBotGuard,
         ),
+        PanelView::Text => text(app, settings, lang),
+        PanelView::TextTopics => text_topics(settings, lang),
+        PanelView::TextThreshold => text_threshold(settings, lang),
+        PanelView::TextAction => text_action(settings, lang),
+        PanelView::Ad => ad(app, settings, lang),
+        PanelView::AdThreshold => ad_threshold(settings, lang),
+        PanelView::AdAction => ad_action(settings, lang),
+        PanelView::Reaction => simple_toggle(
+            lang,
+            t!(lang, "reaction_title"),
+            settings.reaction_scan,
+            CallbackAction::ToggleReactionScan,
+        ),
         PanelView::Media => media(settings, lang),
         PanelView::MediaKinds => media_kinds(settings, lang),
         PanelView::MediaThreshold => media_threshold(settings, lang),
@@ -145,6 +181,9 @@ fn main(app: &Arc<App>, settings: &GroupSettings, lang: Lang) -> Screen {
             dryrun = on_off(lang, settings.dry_run),
             grace = grace_label(lang, settings.grace_messages),
             media = media_label(lang, settings),
+            text = text_label(lang, settings),
+            ads = ad_label(lang, settings),
+            reactions = on_off(lang, settings.reaction_scan),
             lang = settings.lang.native_name(),
         ),
     );
@@ -217,10 +256,26 @@ fn main_keyboard(lang: Lang) -> InlineKeyboardMarkup {
                 CallbackAction::Panel(PanelView::Lang),
             ),
         ],
-        vec![button(
-            t!(lang, "panel_btn_botguard"),
-            CallbackAction::Panel(PanelView::BotGuard),
-        )],
+        vec![
+            button(
+                t!(lang, "panel_btn_text"),
+                CallbackAction::Panel(PanelView::Text),
+            ),
+            button(
+                t!(lang, "panel_btn_ad"),
+                CallbackAction::Panel(PanelView::Ad),
+            ),
+        ],
+        vec![
+            button(
+                t!(lang, "panel_btn_reaction"),
+                CallbackAction::Panel(PanelView::Reaction),
+            ),
+            button(
+                t!(lang, "panel_btn_botguard"),
+                CallbackAction::Panel(PanelView::BotGuard),
+            ),
+        ],
         vec![
             button(t!(lang, "panel_btn_reset"), CallbackAction::Reset),
             button(t!(lang, "btn_close"), CallbackAction::Close),
@@ -514,6 +569,250 @@ fn grace(settings: &GroupSettings, lang: Lang) -> Screen {
         ),
         keyboard: InlineKeyboardMarkup::new(vec![row, back_row(lang)]),
     }
+}
+
+// --------------------------------------------------------- message text --
+
+/// Whether Jev is configured at all.
+///
+/// Every screen below needs it, and a panel that lets an admin tick topics and
+/// set a threshold that can never take effect is worse than one that says so.
+fn jev_missing(app: &Arc<App>, lang: Lang) -> Option<String> {
+    (!app.jev.enabled()).then(|| format!("\n\n⚠️ {}", t!(lang, "jev_unavailable")))
+}
+
+/// The hub for judging what people write.
+fn text(app: &Arc<App>, settings: &GroupSettings, lang: Lang) -> Screen {
+    let mut text = t!(
+        lang,
+        "text_title",
+        state = on_off(lang, settings.text_scan),
+        threshold = settings.text_threshold,
+        action = t!(lang, settings.text_action.label_key()),
+        topics = topics_summary(settings, lang),
+    );
+
+    if let Some(warning) = jev_missing(app, lang) {
+        text.push_str(&warning);
+    }
+
+    // A scan that is on and watching nothing is a switch that does nothing.
+    if settings.text_scan && settings.text_topics.is_empty() {
+        text.push_str("\n\n⚠️ ");
+        text.push_str(&t!(lang, "text_topics_none"));
+    }
+
+    let mut rows = vec![vec![button(
+        checkbox(settings.text_scan, t!(lang, "text_btn_enable")),
+        CallbackAction::ToggleTextScan,
+    )]];
+
+    if settings.text_scan {
+        rows.push(vec![button(
+            t!(lang, "text_btn_topics"),
+            CallbackAction::Panel(PanelView::TextTopics),
+        )]);
+        rows.push(vec![
+            button(
+                t!(lang, "text_btn_threshold"),
+                CallbackAction::Panel(PanelView::TextThreshold),
+            ),
+            button(
+                t!(lang, "text_btn_action"),
+                CallbackAction::Panel(PanelView::TextAction),
+            ),
+        ]);
+    }
+
+    rows.push(back_row(lang));
+    Screen {
+        text,
+        keyboard: InlineKeyboardMarkup::new(rows),
+    }
+}
+
+/// The chosen subjects as a short list, or "none".
+fn topics_summary(settings: &GroupSettings, lang: Lang) -> String {
+    if settings.text_topics.is_empty() {
+        return t!(lang, "text_topics_empty");
+    }
+
+    // Iterated over ALL rather than over the stored list so the order is fixed
+    // and does not shuffle as an admin toggles things.
+    TextTopic::ALL
+        .iter()
+        .filter(|topic| settings.text_topics.contains(topic))
+        .map(|topic| t!(lang, topic.label_key()))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+fn text_topics(settings: &GroupSettings, lang: Lang) -> Screen {
+    let mut text = t!(lang, "text_topics_title");
+    if settings.text_topics.is_empty() {
+        text.push_str("\n\n⚠️ ");
+        text.push_str(&t!(lang, "text_topics_none"));
+    }
+
+    let mut rows: Vec<Vec<InlineKeyboardButton>> = TextTopic::ALL
+        .iter()
+        .map(|topic| {
+            vec![button(
+                checkbox(
+                    settings.text_topics.contains(topic),
+                    t!(lang, topic.label_key()),
+                ),
+                CallbackAction::ToggleTextTopic(*topic),
+            )]
+        })
+        .collect();
+
+    rows.push(text_back_row(lang));
+    Screen {
+        text,
+        keyboard: InlineKeyboardMarkup::new(rows),
+    }
+}
+
+fn text_threshold(settings: &GroupSettings, lang: Lang) -> Screen {
+    let steps = vec![
+        button("−10".to_owned(), CallbackAction::AdjustTextThreshold(-10)),
+        button("−5".to_owned(), CallbackAction::AdjustTextThreshold(-5)),
+        button(
+            format!("{}%", settings.text_threshold),
+            CallbackAction::Panel(PanelView::TextThreshold),
+        ),
+        button("+5".to_owned(), CallbackAction::AdjustTextThreshold(5)),
+        button("+10".to_owned(), CallbackAction::AdjustTextThreshold(10)),
+    ];
+
+    Screen {
+        text: t!(
+            lang,
+            "text_threshold_title",
+            value = settings.text_threshold
+        ),
+        keyboard: InlineKeyboardMarkup::new(vec![steps, text_back_row(lang)]),
+    }
+}
+
+fn text_action(settings: &GroupSettings, lang: Lang) -> Screen {
+    let rows: Vec<Vec<InlineKeyboardButton>> = Action::ALL
+        .iter()
+        .map(|option| {
+            vec![button(
+                checkbox(
+                    *option == settings.text_action,
+                    t!(lang, option.label_key()),
+                ),
+                CallbackAction::SetTextAction(*option),
+            )]
+        })
+        .chain(std::iter::once(text_back_row(lang)))
+        .collect();
+
+    Screen {
+        text: t!(
+            lang,
+            "text_action_title",
+            value = t!(lang, settings.text_action.label_key())
+        ),
+        keyboard: InlineKeyboardMarkup::new(rows),
+    }
+}
+
+fn text_back_row(lang: Lang) -> Vec<InlineKeyboardButton> {
+    vec![
+        button(t!(lang, "btn_back"), CallbackAction::Panel(PanelView::Text)),
+        button(t!(lang, "btn_close"), CallbackAction::Close),
+    ]
+}
+
+// ------------------------------------------------------- advertising guard --
+
+fn ad(app: &Arc<App>, settings: &GroupSettings, lang: Lang) -> Screen {
+    let mut text = t!(
+        lang,
+        "ad_title",
+        state = on_off(lang, settings.ad_scan),
+        threshold = settings.ad_threshold,
+        action = t!(lang, settings.ad_action.label_key()),
+    );
+
+    if let Some(warning) = jev_missing(app, lang) {
+        text.push_str(&warning);
+    }
+
+    let mut rows = vec![vec![button(
+        checkbox(settings.ad_scan, t!(lang, "ad_btn_enable")),
+        CallbackAction::ToggleAdScan,
+    )]];
+
+    if settings.ad_scan {
+        rows.push(vec![
+            button(
+                t!(lang, "ad_btn_threshold"),
+                CallbackAction::Panel(PanelView::AdThreshold),
+            ),
+            button(
+                t!(lang, "ad_btn_action"),
+                CallbackAction::Panel(PanelView::AdAction),
+            ),
+        ]);
+    }
+
+    rows.push(back_row(lang));
+    Screen {
+        text,
+        keyboard: InlineKeyboardMarkup::new(rows),
+    }
+}
+
+fn ad_threshold(settings: &GroupSettings, lang: Lang) -> Screen {
+    let steps = vec![
+        button("−10".to_owned(), CallbackAction::AdjustAdThreshold(-10)),
+        button("−5".to_owned(), CallbackAction::AdjustAdThreshold(-5)),
+        button(
+            format!("{}%", settings.ad_threshold),
+            CallbackAction::Panel(PanelView::AdThreshold),
+        ),
+        button("+5".to_owned(), CallbackAction::AdjustAdThreshold(5)),
+        button("+10".to_owned(), CallbackAction::AdjustAdThreshold(10)),
+    ];
+
+    Screen {
+        text: t!(lang, "ad_threshold_title", value = settings.ad_threshold),
+        keyboard: InlineKeyboardMarkup::new(vec![steps, ad_back_row(lang)]),
+    }
+}
+
+fn ad_action(settings: &GroupSettings, lang: Lang) -> Screen {
+    let rows: Vec<Vec<InlineKeyboardButton>> = Action::ALL
+        .iter()
+        .map(|option| {
+            vec![button(
+                checkbox(*option == settings.ad_action, t!(lang, option.label_key())),
+                CallbackAction::SetAdAction(*option),
+            )]
+        })
+        .chain(std::iter::once(ad_back_row(lang)))
+        .collect();
+
+    Screen {
+        text: t!(
+            lang,
+            "ad_action_title",
+            value = t!(lang, settings.ad_action.label_key())
+        ),
+        keyboard: InlineKeyboardMarkup::new(rows),
+    }
+}
+
+fn ad_back_row(lang: Lang) -> Vec<InlineKeyboardButton> {
+    vec![
+        button(t!(lang, "btn_back"), CallbackAction::Panel(PanelView::Ad)),
+        button(t!(lang, "btn_close"), CallbackAction::Close),
+    ]
 }
 
 // --------------------------------------------------------- group media scan --

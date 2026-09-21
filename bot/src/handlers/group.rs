@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use teloxide::types::Message;
 
-use crate::{App, Tg, db, enforcement, filters, handlers::botguard, i18n, media, policy, scan};
+use crate::{
+    App, Tg, db, enforcement, filters, handlers::botguard, i18n, jev, media, policy, scan,
+};
 
 pub async fn handle_message(bot: Tg, msg: Message, app: Arc<App>) -> anyhow::Result<()> {
     if let Err(err) = scan_message(&bot, &msg, &app).await {
@@ -77,7 +79,12 @@ async fn scan_message(bot: &Tg, msg: &Message, app: &Arc<App>) -> anyhow::Result
     // us: a member of two years can still post pornography.
     let attachment = media::find(msg, &settings, app.cfg.media_max_bytes);
 
-    if !profile_pass && attachment.is_none() {
+    // And neither does the text scan, for the same reason: what somebody
+    // writes is judged on its own, not on how long they have been here.
+    let message_text = msg.text().or_else(|| msg.caption()).unwrap_or_default();
+    let text_pass = app.jev.enabled() && settings.scans_text() && !message_text.trim().is_empty();
+
+    if !profile_pass && attachment.is_none() && !text_pass {
         return Ok(());
     }
 
@@ -119,6 +126,16 @@ async fn scan_message(bot: &Tg, msg: &Message, app: &Arc<App>) -> anyhow::Result
         return media_verdict(app, bot, &settings, user, msg, scoring.clone()).await;
     }
 
+    // One Jev call answers every topic the group chose *and* the advertising
+    // question, because the model evaluates them in parallel against the same
+    // state. Asking six things costs about what asking one costs.
+    if text_pass
+        && let Some(found) = jev::text::scan(&app.jev, &settings, message_text).await
+        && !found.is_empty()
+    {
+        return text_verdict(app, bot, &settings, user, msg, found).await;
+    }
+
     if !profile_pass {
         return Ok(());
     }
@@ -131,7 +148,7 @@ async fn scan_message(bot: &Tg, msg: &Message, app: &Arc<App>) -> anyhow::Result
         bot,
         settings.clone(),
         user,
-        msg,
+        Some(msg),
         needs,
         shared.then_some(media_scoring).flatten(),
     )
@@ -153,7 +170,91 @@ async fn scan_message(bot: &Tg, msg: &Message, app: &Arc<App>) -> anyhow::Result
         return Ok(());
     }
 
-    enforcement::enforce(app, bot, &settings, &ctx, &report, &verdict, msg.id).await
+    enforcement::enforce(app, bot, &settings, &ctx, &report, &verdict, Some(msg.id)).await
+}
+
+/// Act on what a message says, on the text sections' own terms.
+///
+/// Built by hand for the same reason [`media_verdict`] is: the presets weigh an
+/// avatar against a bio against a pinned channel, and none of that was looked
+/// up here. The finding is about one message, so the verdict names the signals
+/// that message produced and uses the sections' own actions.
+///
+/// A message can be both — an advert *and* off-topic — and it is dealt with
+/// once, at the stronger of the two configured actions, with both reasons on
+/// the report so an admin can see what it was judged for.
+async fn text_verdict(
+    app: &Arc<App>,
+    bot: &Tg,
+    settings: &crate::db::models::GroupSettings,
+    user: &teloxide::types::User,
+    msg: &Message,
+    found: jev::text::TextVerdict,
+) -> anyhow::Result<()> {
+    let mut report = filters::ScanReport::default();
+    let mut reasons: Vec<&'static str> = Vec::new();
+    let mut action = policy::Action::Report;
+    let mut score = 0.0_f32;
+
+    if let Some((topic, certainty)) = found.topic {
+        report.insert(
+            filters::F_TEXT_TOPIC,
+            filters::FilterOutcome::triggered(
+                certainty,
+                // The topic's own name, untranslated, exactly as image scores
+                // are stored: this is replayed in the details view long after
+                // the scan, possibly in another language than the group had.
+                Some(format!(
+                    "{} {}%",
+                    topic,
+                    crate::util::text::percent(certainty)
+                )),
+            ),
+        );
+        reasons.push(filters::F_TEXT_TOPIC);
+        action = action.strongest(settings.text_action);
+        score = score.max(certainty);
+    }
+
+    if let Some(certainty) = found.advertising {
+        report.insert(
+            filters::F_TEXT_AD,
+            filters::FilterOutcome::triggered(
+                certainty,
+                Some(format!("{}%", crate::util::text::percent(certainty))),
+            ),
+        );
+        reasons.push(filters::F_TEXT_AD);
+        action = action.strongest(settings.ad_action);
+        score = score.max(certainty);
+    }
+
+    let verdict = policy::Verdict {
+        matched: true,
+        // Test mode is a promise that nothing will be changed, and it covers
+        // every part of the bot or it is worthless.
+        action: if settings.dry_run {
+            policy::Action::Report
+        } else {
+            action
+        },
+        score,
+        reasons,
+    };
+
+    // Nothing about the account was looked up, so every profile signal stays
+    // unknown — `media_only` is the right shape for that even though what was
+    // judged here was text.
+    let ctx = scan::ScanContext::media_only(
+        user.id.0 as i64,
+        scan::display_name(user),
+        user.username.clone(),
+        settings.clone(),
+        scan::ImageScoring::screened(0.0),
+        app.cfg.global_reputation_min_bans,
+    );
+
+    enforcement::enforce(app, bot, settings, &ctx, &report, &verdict, Some(msg.id)).await
 }
 
 /// Act on explicit media, on the media section's own terms.
@@ -199,7 +300,7 @@ async fn media_verdict(
         app.cfg.global_reputation_min_bans,
     );
 
-    enforcement::enforce(app, bot, settings, &ctx, &report, &verdict, msg.id).await
+    enforcement::enforce(app, bot, settings, &ctx, &report, &verdict, Some(msg.id)).await
 }
 
 /// The cheap pre-checks, ordered from cheapest to most expensive.

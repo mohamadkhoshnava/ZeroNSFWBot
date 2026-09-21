@@ -8,7 +8,7 @@
 use std::str::FromStr;
 
 use crate::{
-    db::models::MediaKind,
+    db::models::{MediaKind, TextTopic},
     i18n::Lang,
     policy::{Action, Policy},
 };
@@ -37,12 +37,24 @@ pub enum PanelView {
     AutoDelete,
     /// Banning bots nobody promoted — not a scan setting, its own switch.
     BotGuard,
+
+    /// Judging what people write: the topic scan and its own numbers.
+    Text,
+    TextTopics,
+    TextThreshold,
+    TextAction,
+    /// The advertising guard, which asks what a message is *for*.
+    Ad,
+    AdThreshold,
+    AdAction,
+    /// Scanning the accounts that react to other people's messages.
+    Reaction,
 }
 
 impl PanelView {
     /// Every screen. Adding a variant without linking to it from the main panel
     /// fails `panel::tests::every_panel_view_is_reachable_from_the_main_screen`.
-    pub const ALL: [PanelView; 14] = [
+    pub const ALL: [PanelView; 17] = [
         PanelView::Main,
         PanelView::Threshold,
         PanelView::Policy,
@@ -57,6 +69,9 @@ impl PanelView {
         PanelView::Global,
         PanelView::AutoDelete,
         PanelView::BotGuard,
+        PanelView::Text,
+        PanelView::Ad,
+        PanelView::Reaction,
     ];
 
     const fn code(self) -> &'static str {
@@ -80,6 +95,14 @@ impl PanelView {
             PanelView::Global => "gl",
             PanelView::AutoDelete => "ad",
             PanelView::BotGuard => "bg",
+            PanelView::Text => "tx",
+            PanelView::TextTopics => "tk",
+            PanelView::TextThreshold => "tt",
+            PanelView::TextAction => "ta",
+            PanelView::Ad => "ag",
+            PanelView::AdThreshold => "ah",
+            PanelView::AdAction => "ai",
+            PanelView::Reaction => "rx",
         }
     }
 
@@ -104,6 +127,14 @@ impl PanelView {
             "gl" => PanelView::Global,
             "ad" => PanelView::AutoDelete,
             "bg" => PanelView::BotGuard,
+            "tx" => PanelView::Text,
+            "tk" => PanelView::TextTopics,
+            "tt" => PanelView::TextThreshold,
+            "ta" => PanelView::TextAction,
+            "ag" => PanelView::Ad,
+            "ah" => PanelView::AdThreshold,
+            "ai" => PanelView::AdAction,
+            "rx" => PanelView::Reaction,
             _ => return None,
         })
     }
@@ -170,6 +201,21 @@ pub enum CallbackAction {
     /// Stills sampled across an animation or clip.
     SetMediaFrames(i16),
 
+    /// Turn the message-text topic scan on or off.
+    ToggleTextScan,
+    /// Add or remove one subject from what the text scan watches for.
+    ToggleTextTopic(TextTopic),
+    AdjustTextThreshold(i16),
+    SetTextAction(Action),
+
+    /// Turn the advertising guard on or off.
+    ToggleAdScan,
+    AdjustAdThreshold(i16),
+    SetAdAction(Action),
+
+    /// Turn reaction scanning on or off.
+    ToggleReactionScan,
+
     Reset,
     Close,
 
@@ -214,6 +260,14 @@ impl CallbackAction {
             CallbackAction::SetMediaAction(action) => format!("p:mas:{action}"),
             CallbackAction::ToggleMediaKind(kind) => format!("p:mkt:{kind}"),
             CallbackAction::SetMediaFrames(n) => format!("p:mfs:{n}"),
+            CallbackAction::ToggleTextScan => "p:txt".to_owned(),
+            CallbackAction::ToggleTextTopic(topic) => format!("p:tkt:{topic}"),
+            CallbackAction::AdjustTextThreshold(delta) => format!("p:ttd:{delta}"),
+            CallbackAction::SetTextAction(action) => format!("p:tas:{action}"),
+            CallbackAction::ToggleAdScan => "p:agt".to_owned(),
+            CallbackAction::AdjustAdThreshold(delta) => format!("p:ahd:{delta}"),
+            CallbackAction::SetAdAction(action) => format!("p:ais:{action}"),
+            CallbackAction::ToggleReactionScan => "p:rxt".to_owned(),
             CallbackAction::Reset => "p:rst".to_owned(),
             CallbackAction::Close => "p:x".to_owned(),
 
@@ -261,6 +315,16 @@ impl CallbackAction {
             ["p", "mas", action] => CallbackAction::SetMediaAction(Action::from_str(action).ok()?),
             ["p", "mkt", kind] => CallbackAction::ToggleMediaKind(MediaKind::from_str(kind).ok()?),
             ["p", "mfs", n] => CallbackAction::SetMediaFrames(n.parse().ok()?),
+            ["p", "txt"] => CallbackAction::ToggleTextScan,
+            ["p", "tkt", topic] => {
+                CallbackAction::ToggleTextTopic(TextTopic::from_str(topic).ok()?)
+            }
+            ["p", "ttd", delta] => CallbackAction::AdjustTextThreshold(delta.parse().ok()?),
+            ["p", "tas", action] => CallbackAction::SetTextAction(Action::from_str(action).ok()?),
+            ["p", "agt"] => CallbackAction::ToggleAdScan,
+            ["p", "ahd", delta] => CallbackAction::AdjustAdThreshold(delta.parse().ok()?),
+            ["p", "ais", action] => CallbackAction::SetAdAction(Action::from_str(action).ok()?),
+            ["p", "rxt"] => CallbackAction::ToggleReactionScan,
             ["p", "rst"] => CallbackAction::Reset,
             ["p", "x"] => CallbackAction::Close,
             // Must come last among the `p:` arms: the two-part patterns above
@@ -327,9 +391,94 @@ mod tests {
             PanelView::MediaThreshold,
             PanelView::MediaAction,
             PanelView::MediaFrames,
+            PanelView::Text,
+            PanelView::TextTopics,
+            PanelView::TextThreshold,
+            PanelView::TextAction,
+            PanelView::Ad,
+            PanelView::AdThreshold,
+            PanelView::AdAction,
+            PanelView::Reaction,
         ] {
             round_trip(CallbackAction::Panel(view));
         }
+    }
+
+    /// Two screens sharing a code would silently open the wrong one, and the
+    /// list above is maintained by hand. This catches the collision itself.
+    #[test]
+    fn no_two_panel_views_share_a_code() {
+        use std::collections::HashMap;
+
+        let views = [
+            PanelView::Main,
+            PanelView::Threshold,
+            PanelView::Policy,
+            PanelView::Custom,
+            PanelView::Categories,
+            PanelView::Media,
+            PanelView::MediaKinds,
+            PanelView::MediaThreshold,
+            PanelView::MediaAction,
+            PanelView::MediaFrames,
+            PanelView::Action,
+            PanelView::Lang,
+            PanelView::Notify,
+            PanelView::Stats,
+            PanelView::DryRun,
+            PanelView::Grace,
+            PanelView::Global,
+            PanelView::AutoDelete,
+            PanelView::BotGuard,
+            PanelView::Text,
+            PanelView::TextTopics,
+            PanelView::TextThreshold,
+            PanelView::TextAction,
+            PanelView::Ad,
+            PanelView::AdThreshold,
+            PanelView::AdAction,
+            PanelView::Reaction,
+        ];
+
+        let mut seen: HashMap<&str, PanelView> = HashMap::new();
+        for view in views {
+            if let Some(other) = seen.insert(view.code(), view) {
+                panic!("{view:?} and {other:?} share the code {:?}", view.code());
+            }
+            assert_eq!(PanelView::parse(view.code()), Some(view));
+        }
+    }
+
+    /// Every text and advertising setting survives the wire format, and none
+    /// of them collides with the media or profile settings they sit beside.
+    #[test]
+    fn text_and_advertising_settings_round_trip() {
+        round_trip(CallbackAction::ToggleTextScan);
+        round_trip(CallbackAction::ToggleAdScan);
+        round_trip(CallbackAction::ToggleReactionScan);
+        round_trip(CallbackAction::AdjustTextThreshold(5));
+        round_trip(CallbackAction::AdjustTextThreshold(-10));
+        round_trip(CallbackAction::AdjustAdThreshold(5));
+        round_trip(CallbackAction::AdjustAdThreshold(-10));
+
+        for action in Action::ALL {
+            round_trip(CallbackAction::SetTextAction(action));
+            round_trip(CallbackAction::SetAdAction(action));
+        }
+        for topic in TextTopic::ALL {
+            round_trip(CallbackAction::ToggleTextTopic(topic));
+        }
+
+        // Three thresholds, three codes. Sharing one would mean tuning the
+        // advertising bar silently moved what counts as an explicit avatar.
+        let encodings = [
+            CallbackAction::AdjustThreshold(5).encode(),
+            CallbackAction::AdjustMediaThreshold(5).encode(),
+            CallbackAction::AdjustTextThreshold(5).encode(),
+            CallbackAction::AdjustAdThreshold(5).encode(),
+        ];
+        let unique: std::collections::HashSet<&String> = encodings.iter().collect();
+        assert_eq!(unique.len(), encodings.len(), "{encodings:?}");
     }
 
     /// Every media setting is reachable and survives the wire format. A code

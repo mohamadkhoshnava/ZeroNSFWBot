@@ -14,22 +14,20 @@ use zeronsfw_bot::{
     scan::{ImageScoring, Sampled},
 };
 
+/// The shipped defaults, named explicitly where a test depends on the value.
+///
+/// Spelled with `..Default::default()` rather than field by field so adding a
+/// setting does not mean editing every fixture in the suite — which is exactly
+/// what made these two files break the day the text scan landed.
 fn defaults() -> GroupDefaults {
     GroupDefaults {
         lang: Lang::En,
         threshold: 40,
         policy: Policy::NsfwAndContact,
         action: Action::Ban,
-        profile_photos_to_scan: 2,
-        dry_run: false,
-        grace_messages: 5,
-        delete_bot_messages: false,
-        bot_message_ttl_secs: 60,
-        media_scan: false,
         media_threshold: 90,
         media_action: Action::Delete,
-        media_frames: 5,
-        ban_foreign_bots: false,
+        ..GroupDefaults::default()
     }
 }
 

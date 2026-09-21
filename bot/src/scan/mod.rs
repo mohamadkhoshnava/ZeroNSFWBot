@@ -40,6 +40,11 @@ pub struct ScanContext {
     pub profile_nsfw: Option<ImageScoring>,
     /// Text read off the avatar, when OCR is enabled and found something.
     pub avatar_text: Option<String>,
+    /// How strongly Jev reads the profile *text* as adult advertising.
+    ///
+    /// `None` is unknown — no API key, nothing substantive to read, or the
+    /// request failed — and never "clean". See [`crate::jev::profile`].
+    pub profile_ad: Option<f32>,
     /// NSFW probability of media attached to this specific message.
     pub message_nsfw: Option<ImageScoring>,
     /// Bans for this account in other groups. `None` when not looked up.
@@ -233,6 +238,7 @@ impl ScanContext {
             photos: PhotoAccess::Unknown,
             profile_nsfw: None,
             avatar_text: None,
+            profile_ad: None,
             message_nsfw: Some(message_nsfw),
             other_group_bans: None,
             settings,
@@ -272,7 +278,10 @@ pub async fn collect(
     bot: &Tg,
     settings: GroupSettings,
     user: &User,
-    message: &Message,
+    // `None` when the scan was not triggered by a message of theirs at all —
+    // a reaction. There is then no attachment to look at, and the message
+    // under the reaction belongs to somebody else.
+    message: Option<&Message>,
     needs: Needs,
     already_scored: Option<ImageScoring>,
 ) -> ScanContext {
@@ -297,18 +306,21 @@ pub async fn collect(
         async {
             match already_scored {
                 Some(scoring) => Some(scoring),
-                None => {
-                    collect_message_media(
-                        app,
-                        bot,
-                        message,
-                        needs,
-                        threshold,
-                        &settings.nsfw_categories,
-                        user_id,
-                    )
-                    .await
-                }
+                None => match message {
+                    Some(message) => {
+                        collect_message_media(
+                            app,
+                            bot,
+                            message,
+                            needs,
+                            threshold,
+                            &settings.nsfw_categories,
+                            user_id,
+                        )
+                        .await
+                    }
+                    None => None,
+                },
             }
         },
         collect_reputation(app, user_id, chat_id, needs),
@@ -316,6 +328,26 @@ pub async fn collect(
 
     let (photos, profile_nsfw, avatar_text) = profile;
     let (bio, personal_channel) = profile_chat;
+
+    // Last, and on its own, because it reads what the calls above produced —
+    // including the text OCR lifted off the avatar, which is exactly the field
+    // a bio-only reading would miss. Skipped entirely unless some filter in
+    // the group's policy asked for it.
+    let profile_ad = if needs.profile_ad {
+        crate::jev::profile::score(
+            &app.jev,
+            crate::jev::profile::ProfileText {
+                display_name: &display_name(user),
+                username: user.username.as_deref(),
+                bio: bio.as_deref(),
+                channel: &personal_channel,
+                avatar_text: avatar_text.as_deref(),
+            },
+        )
+        .await
+    } else {
+        None
+    };
 
     ScanContext {
         user_id,
@@ -326,6 +358,7 @@ pub async fn collect(
         photos,
         profile_nsfw,
         avatar_text,
+        profile_ad,
         message_nsfw,
         other_group_bans,
         settings,

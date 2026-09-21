@@ -16,6 +16,7 @@
 
 mod bio_keywords;
 mod bio_link;
+mod bio_semantic;
 mod message_media;
 mod name_pattern;
 mod no_photo_link;
@@ -46,11 +47,24 @@ filter_ids! {
     F_BIO_LINK      => "bio_link",
     F_PROFILE_CHANNEL => "profile_channel",
     F_BIO_KEYWORDS  => "bio_keywords",
+    F_BIO_SEMANTIC  => "bio_semantic",
     F_NAME_PATTERN  => "name_pattern",
     F_PROFILE_OCR   => "profile_ocr",
     F_NO_PHOTO_LINK => "no_photo_link",
     F_REPUTATION    => "reputation",
 }
+
+/// Signals that are not profile filters and never appear in a policy.
+///
+/// They belong to the message-text scan, which works like the group media
+/// scan: it judges one message on its own terms rather than asking what kind
+/// of account sent it, so it builds its own verdict instead of going through
+/// [`crate::policy::evaluate`]. The ids exist so the report, the details view
+/// and the `reason_*` translations work exactly as they do for a filter —
+/// but they are deliberately outside `filter_ids!`, because offering them in
+/// the custom-policy picker would list two signals that can never fire there.
+pub const F_TEXT_TOPIC: &str = "text_topic";
+pub const F_TEXT_AD: &str = "text_ad";
 
 /// The data a filter needs. The scanner fetches the union of the needs of the
 /// filters the active policy actually consults, and nothing more.
@@ -64,6 +78,9 @@ pub struct Needs {
     pub avatar_text: bool,
     pub message_media: bool,
     pub reputation: bool,
+    /// Jev's reading of the profile text. Its own flag so a group whose policy
+    /// never consults `bio_semantic` makes no API call at all.
+    pub profile_ad: bool,
 }
 
 impl Needs {
@@ -76,6 +93,7 @@ impl Needs {
             avatar_text: self.avatar_text || other.avatar_text,
             message_media: self.message_media || other.message_media,
             reputation: self.reputation || other.reputation,
+            profile_ad: self.profile_ad || other.profile_ad,
         }
     }
 }
@@ -196,6 +214,7 @@ impl FilterRegistry {
                 Arc::new(bio_link::BioLink),
                 Arc::new(profile_channel::ProfileChannel),
                 Arc::new(bio_keywords::BioKeywords),
+                Arc::new(bio_semantic::BioSemantic),
                 Arc::new(name_pattern::NamePattern),
                 Arc::new(profile_ocr::ProfileOcr),
                 Arc::new(no_photo_link::NoPhotoLink),

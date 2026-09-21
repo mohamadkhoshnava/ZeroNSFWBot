@@ -231,6 +231,14 @@ fn affects_detection(action: &CallbackAction) -> bool {
             | SetMediaAction(_)
             | ToggleMediaKind(_)
             | SetMediaFrames(_)
+            | ToggleTextScan
+            | ToggleTextTopic(_)
+            | AdjustTextThreshold(_)
+            | SetTextAction(_)
+            | ToggleAdScan
+            | AdjustAdThreshold(_)
+            | SetAdAction(_)
+            | ToggleReactionScan
             | Reset
     )
 }
@@ -367,6 +375,62 @@ async fn apply(
         SetMediaFrames(value) => {
             db::groups::set_media_frames(&app.db, chat_id, value).await?;
             PanelView::MediaFrames
+        }
+
+        ToggleTextScan => {
+            db::groups::toggle_flag(&app.db, chat_id, db::groups::BoolColumn::TextScan).await?;
+            // Turning it on with nothing selected would scan nothing, so go
+            // straight to the picker rather than leave a switch that does
+            // nothing — the same reasoning as `custom` without filters.
+            if !settings.text_scan && settings.text_topics.is_empty() {
+                PanelView::TextTopics
+            } else {
+                PanelView::Text
+            }
+        }
+
+        ToggleTextTopic(topic) => {
+            let mut topics = settings.text_topics.clone();
+            match topics.iter().position(|t| *t == topic) {
+                Some(index) => {
+                    topics.remove(index);
+                }
+                None => topics.push(topic),
+            }
+            db::groups::set_text_topics(&app.db, chat_id, &topics).await?;
+            PanelView::TextTopics
+        }
+
+        AdjustTextThreshold(delta) => {
+            let next = (settings.text_threshold + delta).clamp(0, 100);
+            db::groups::set_text_threshold(&app.db, chat_id, next).await?;
+            PanelView::TextThreshold
+        }
+
+        SetTextAction(value) => {
+            db::groups::set_text_action(&app.db, chat_id, value).await?;
+            PanelView::TextAction
+        }
+
+        ToggleAdScan => {
+            db::groups::toggle_flag(&app.db, chat_id, db::groups::BoolColumn::AdScan).await?;
+            PanelView::Ad
+        }
+
+        AdjustAdThreshold(delta) => {
+            let next = (settings.ad_threshold + delta).clamp(0, 100);
+            db::groups::set_ad_threshold(&app.db, chat_id, next).await?;
+            PanelView::AdThreshold
+        }
+
+        SetAdAction(value) => {
+            db::groups::set_ad_action(&app.db, chat_id, value).await?;
+            PanelView::AdAction
+        }
+
+        ToggleReactionScan => {
+            db::groups::toggle_flag(&app.db, chat_id, db::groups::BoolColumn::ReactionScan).await?;
+            PanelView::Reaction
         }
 
         Reset => {

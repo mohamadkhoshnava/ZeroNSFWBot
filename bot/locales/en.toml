@@ -41,8 +41,10 @@ report_deleted_only = "🧹 Comment by <b>{user}</b> removed."
 report_muted = "🔇 <b>{user}</b> muted and their comment removed."
 report_muted_kept = "🔇 <b>{user}</b> muted, but I could not remove their comment."
 report_dry_run = "🕶 <b>Test mode</b> — <b>{user}</b> would have been actioned, but nothing was changed."
+report_warned = "⚠️ <b>{user}</b>, this message was flagged. Please keep the group's rules in mind."
 report_no_action = "⚠️ Flagged <b>{user}</b>, but I could not act."
 report_score = "NSFW probability: <b>{score}%</b>"
+report_score_text = "Confidence: <b>{score}%</b>"
 report_reasons = "Signals: {reasons}"
 report_failed = "\n{problem}"
 btn_mark_wrong = "❌ False positive"
@@ -60,6 +62,9 @@ reason_message_media = "NSFW media in the message"
 reason_bio_link = "link or @username in bio"
 reason_profile_channel = "channel attached to the profile"
 reason_bio_keywords = "adult keywords in profile text"
+reason_bio_semantic = "profile text reads as adult advertising"
+reason_text_topic = "message subject"
+reason_text_ad = "message is advertising"
 reason_name_pattern = "suspicious name or username"
 reason_profile_ocr = "contact info written on the avatar"
 reason_no_photo_link = "no profile photo but a link in bio"
@@ -74,6 +79,9 @@ panel_state = """
 🕶 Test mode: <b>{dryrun}</b>
 🛡 Grace window: <b>{grace}</b>
 🖼 Media scan: <b>{media}</b>
+🗯 Text scan: <b>{text}</b>
+📣 Ad guard: <b>{ads}</b>
+👍 Reaction scan: <b>{reactions}</b>
 🌐 Language: <b>{lang}</b>"""
 panel_btn_threshold = "🎚 Threshold"
 panel_btn_policy = "🧩 Filter mode"
@@ -87,6 +95,9 @@ panel_btn_global = "🌍 Shared blocklist"
 panel_btn_autodelete = "🧹 Clean up my messages"
 panel_btn_media = "🖼 Media scan"
 panel_btn_botguard = "🤖 Ban unpromoted bots"
+panel_btn_text = "🗯 Text scan"
+panel_btn_ad = "📣 Ad guard"
+panel_btn_reaction = "👍 Reaction scan"
 panel_btn_reset = "♻️ Reset to defaults"
 panel_reset_done = "♻️ Settings restored to defaults."
 
@@ -119,6 +130,7 @@ action_title = "⚡ <b>Action</b> — currently <b>{value}</b>"
 action_ban = "Ban + delete"
 action_delete = "Delete only"
 action_mute = "Mute + delete"
+action_warn = "Warn publicly"
 action_report = "Report only"
 
 lang_title = "🌐 <b>Language</b> — currently <b>{value}</b>"
@@ -170,6 +182,53 @@ media_kind_sticker = "Stickers"
 media_kind_video = "Videos"
 media_frames_title = "🎞 <b>Frames per clip</b> — currently <b>{value}</b>\n\nHow many stills I take from across a GIF or video, spread over its whole length. One frame means trusting Telegram's preview image, which is an arbitrary frame — and a clip that opens innocently and turns explicit later is a known trick. More frames catch more, and cost more."
 
+# ------------------------------------------------------------- text scan --
+jev_unavailable = "This needs the text model, which this bot has no API key for. Nothing on this screen takes effect until the operator sets one."
+text_state_on = "on, {count} topic(s), {threshold}%"
+text_state_empty = "on, no topic picked"
+ad_state_on = "on, {threshold}%"
+text_title = """🗯 <b>Text scan</b> — <b>{state}</b>
+
+Reads what people write and judges how strongly each message is about the subjects you pick. It applies to every member, like the media scan, and it looks at the message rather than the account behind it.
+
+🗂 Watching: <b>{topics}</b>
+🎚 Threshold: <b>{threshold}%</b>
+⚡ Action: <b>{action}</b>"""
+text_btn_enable = "Judge what people write here"
+text_btn_topics = "🗂 Topics"
+text_btn_threshold = "🎚 Text threshold"
+text_btn_action = "⚡ Text action"
+text_topics_title = "🗂 <b>Topics</b>\n\nTap a subject to watch for it. Only what you tick is asked about, and a group watching one subject costs no more than a group watching six — every question is answered in the same pass.\n\nPick what does not belong in <i>this</i> group. A political debate group that ticks Politics will have its own conversation deleted."
+text_topics_none = "No topic ticked — the text scan is on but will never look at anything. Pick at least one."
+text_topics_empty = "nothing"
+text_threshold_title = "🎚 <b>Text threshold</b> — currently <b>{value}%</b>\n\nHow strongly a message has to be <i>about</i> a watched subject before I act. A message that mentions something in passing scores low; one that is entirely about it scores high. 70–85% keeps ordinary conversation out of it; below 50% will catch jokes and passing references."
+text_action_title = "⚡ <b>Text action</b> — currently <b>{value}</b>\n\nWhat to do about a message on a watched subject."
+topic_sexual = "Sexual content"
+topic_violence = "Violence and threats"
+topic_hate = "Hate speech"
+topic_insult = "Insults and abuse"
+topic_drugs = "Drugs"
+topic_gambling = "Gambling"
+topic_scam = "Scams and fraud"
+topic_politics = "Politics"
+topic_religion = "Religion"
+
+# ------------------------------------------------------------- ad guard --
+ad_title = """📣 <b>Ad guard</b> — <b>{state}</b>
+
+Catches messages whose purpose is to send people somewhere else — a channel, a service, a referral link. This is a different question from the topics: a topic asks what a message is <i>about</i>, this asks what it is <i>for</i>. Recommending something in answer to a question is not advertising and is not treated as such.
+
+🎚 Threshold: <b>{threshold}%</b>
+⚡ Action: <b>{action}</b>"""
+ad_btn_enable = "Act on advertising"
+ad_btn_threshold = "🎚 Ad threshold"
+ad_btn_action = "⚡ Ad action"
+ad_threshold_title = "🎚 <b>Ad threshold</b> — currently <b>{value}%</b>\n\nHow certain I must be that a message is an advertisement. 75–90% suits most groups; lower starts catching members who simply recommend things."
+ad_action_title = "⚡ <b>Ad action</b> — currently <b>{value}</b>\n\nWhat to do about an advertisement. <b>Warn publicly</b> is the default and the mildest: the message stays and the sender gets a visible reply, which is usually enough — most people who drop a link in a group are members, not spammers."
+
+# ------------------------------------------------------------ reactions --
+reaction_title = "👍 <b>Reaction scan</b>\n\nScan the accounts that react to messages, not only the ones that write them.\n\nA reaction puts a profile's photo and name in front of the whole group without posting anything that can be deleted, which is exactly why spam rings use it. The same profile checks apply, and nothing of anybody else's is touched: the message under the reaction belongs to an innocent member, so it is never deleted or replied to.\n\nI must be an administrator here for Telegram to tell me about reactions at all."
+
 # ------------------------------------------------------------------ stats --
 stats_title = "📊 <b>Statistics for {chat}</b>"
 stats_row = "<b>{period}</b> — detected {detected} · deleted {deleted} · banned {banned}"
@@ -182,6 +241,8 @@ stats_none = "Nothing detected yet. 🎉"
 # --------------------------------------------------------- DM to the admin --
 dm_notify = "🛡 <b>{chat}</b>\n\nI removed a comment by <b>{user}</b>.\nNSFW probability: <b>{score}%</b>\nSignals: {reasons}"
 dm_notify_kept = "🛡 <b>{chat}</b>\n\nI actioned <b>{user}</b>, but their comment is still in the group.\nNSFW probability: <b>{score}%</b>\nSignals: {reasons}"
+dm_notify_text = "🛡 <b>{chat}</b>\n\nI removed a message by <b>{user}</b> for what it said.\nConfidence: <b>{score}%</b>\nSignals: {reasons}"
+dm_notify_text_kept = "🛡 <b>{chat}</b>\n\nI actioned <b>{user}</b> for what a message said, but it is still in the group.\nConfidence: <b>{score}%</b>\nSignals: {reasons}"
 
 # ----------------------------------------------------------- private chat --
 start_title = "🛡 <b>{bot}</b>"
@@ -230,6 +291,14 @@ Separately, and off until you turn it on, I can check the photos, GIFs, stickers
 
 GIFs and videos are not judged by their preview image. I take several stills from across the whole clip, because one that starts innocently and turns explicit later is a known trick.
 
+<b>What people write</b>
+
+Also off until you turn it on: I can judge how strongly each message is about subjects you choose — sexual content, violence, hate speech, insults, drugs, gambling, scams, politics, religion — and act past a confidence you set. Separately, an ad guard catches messages whose purpose is to send people elsewhere; by default it replies with a public warning rather than deleting, because most people who drop a link in a group are members, not spammers.
+
+<b>Reactions</b>
+
+I can run the same profile checks on the accounts that react to messages, not only those that write them — a reaction puts a spam profile in front of the whole group with nothing of its own to delete. Nothing of anybody else's is touched: the message under the reaction is never removed.
+
 <b>Setting it up</b>
 1. Add me to the group
 2. Promote me with <b>Delete messages</b> and <b>Ban users</b>
@@ -251,6 +320,7 @@ pm_lang_title = "🌐 Choose your language:"
 btn_appeal = "🙋 Appeal"
 banned_notice = "🚫 You were removed from <b>{chat}</b> because your profile was flagged as NSFW advertising ({score}%).\n\nIf this is wrong, you can appeal and a group admin will review it."
 banned_notice_media = "🚫 You were removed from <b>{chat}</b> because media you posted was flagged as NSFW ({score}%).\n\nIf this is wrong, you can appeal and a group admin will review it."
+banned_notice_text = "🚫 You were removed from <b>{chat}</b> because of something you wrote there ({score}%).\n\nIf this is wrong, you can appeal and a group admin will review it."
 appeal_sent = "✅ Your appeal was sent to the group admins."
 appeal_undeliverable = "Your appeal was recorded, but no admin of that group has enabled private alerts, so nobody was notified. Contact an admin directly."
 appeal_already = "You have already appealed. Please wait for an admin."

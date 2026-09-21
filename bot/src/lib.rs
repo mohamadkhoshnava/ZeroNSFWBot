@@ -12,6 +12,7 @@ pub mod enforcement;
 pub mod filters;
 pub mod handlers;
 pub mod i18n;
+pub mod jev;
 pub mod media;
 pub mod policy;
 pub mod scan;
@@ -31,7 +32,8 @@ use teloxide::{
 
 use crate::{
     admin::broadcast::BroadcastRegistry, config::Config, detector::DetectorClient,
-    filters::FilterRegistry, util::admin_cache::AdminCache, util::ratelimit::RateLimiter,
+    filters::FilterRegistry, jev::JevClient, util::admin_cache::AdminCache,
+    util::ratelimit::RateLimiter,
 };
 
 /// The bot handle used everywhere.
@@ -59,6 +61,8 @@ pub struct App {
     pub cfg: Config,
     pub db: PgPool,
     pub detector: DetectorClient,
+    /// Typed text decisions. Disabled, and harmless, without an API key.
+    pub jev: JevClient,
     pub filters: FilterRegistry,
     pub admins: AdminCache,
     /// Private-chat detector test, per user.
@@ -87,6 +91,12 @@ impl App {
             cfg.detector_url.clone(),
             cfg.detector_timeout,
             cfg.enable_ocr,
+        )?;
+        let jev = JevClient::new(
+            cfg.jev_url.clone(),
+            cfg.jev_api_key.clone(),
+            cfg.jev_model.clone(),
+            cfg.jev_timeout,
         )?;
 
         // Best effort: a detector that is still loading its model must not stop
@@ -117,6 +127,7 @@ impl App {
             broadcasts: BroadcastRegistry::new(),
             filters: FilterRegistry::with_defaults(),
             detector,
+            jev,
             db,
             cfg,
             bot_id,

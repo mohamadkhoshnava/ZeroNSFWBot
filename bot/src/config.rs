@@ -13,6 +13,9 @@ const DEFAULT_PROJECT_URL: &str = "https://github.com/mohamadkhoshnava/ZeroNSFWB
 /// The maintainer's public channel, credited in the bot's own messages.
 const DEFAULT_DEVELOPER_CHANNEL: &str = "@SEYED_BAX";
 
+/// TypeSafe's System One endpoint, unless `JEV_API_URL` says otherwise.
+const DEFAULT_JEV_URL: &str = "https://api.typesafe.ai/v1/systemone";
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bot_token: String,
@@ -32,6 +35,18 @@ pub struct Config {
     pub detector_url: String,
     pub detector_timeout: Duration,
     pub enable_ocr: bool,
+
+    /// TypeSafe's System One endpoint.
+    pub jev_url: String,
+    /// `None` disables every Jev-backed feature: the semantic profile filter,
+    /// the text-topic scan, the advertising guard and the language guess all
+    /// report themselves unavailable and the bot behaves as it did before.
+    pub jev_api_key: Option<String>,
+    pub jev_model: String,
+    /// Short on purpose. Jev answers in 70–500 ms, and this call sits in the
+    /// path of an ordinary group message — a slow answer is worth less than
+    /// getting out of the way.
+    pub jev_timeout: Duration,
     /// Largest clip the bot will download to sample frames from. Anything
     /// bigger falls back to Telegram's thumbnail — one arbitrary frame, but
     /// free. 20 MB is also the ceiling `getFile` will serve.
@@ -75,6 +90,52 @@ pub struct GroupDefaults {
     /// running its own unpromoted helper bot should not inherit a rule that
     /// removes it.
     pub ban_foreign_bots: bool,
+
+    /// Whether new groups start with the message-text scan on. Off: it reads
+    /// what every member writes, which no group should inherit silently.
+    pub text_scan: bool,
+    /// Percent, 0-100.
+    pub text_threshold: i16,
+    pub text_action: Action,
+    /// Whether new groups start with the advertising guard on.
+    pub ad_scan: bool,
+    pub ad_threshold: i16,
+    pub ad_action: Action,
+    /// Whether new groups scan the accounts that react to messages.
+    pub reaction_scan: bool,
+}
+
+/// The same values `from_env` falls back to, as a struct.
+///
+/// Exists so tests and callers can name the one field they care about and
+/// inherit the rest — adding a setting then costs one line here rather than a
+/// line in every fixture.
+impl Default for GroupDefaults {
+    fn default() -> Self {
+        Self {
+            lang: Lang::En,
+            threshold: 40,
+            policy: Policy::NsfwAndContact,
+            action: Action::Ban,
+            profile_photos_to_scan: 2,
+            dry_run: false,
+            grace_messages: 5,
+            delete_bot_messages: false,
+            bot_message_ttl_secs: 60,
+            media_scan: false,
+            media_threshold: 90,
+            media_action: Action::Delete,
+            media_frames: 5,
+            ban_foreign_bots: false,
+            text_scan: false,
+            text_threshold: 70,
+            text_action: Action::Delete,
+            ad_scan: false,
+            ad_threshold: 75,
+            ad_action: Action::Warn,
+            reaction_scan: false,
+        }
+    }
 }
 
 impl Config {
@@ -114,6 +175,24 @@ impl Config {
             bail!("DEFAULT_MEDIA_THRESHOLD must be between 0 and 100, got {media_threshold}");
         }
 
+        let text_threshold = num("DEFAULT_TEXT_THRESHOLD", 70_i16)?;
+        if !(0..=100).contains(&text_threshold) {
+            bail!("DEFAULT_TEXT_THRESHOLD must be between 0 and 100, got {text_threshold}");
+        }
+
+        let ad_threshold = num("DEFAULT_AD_THRESHOLD", 75_i16)?;
+        if !(0..=100).contains(&ad_threshold) {
+            bail!("DEFAULT_AD_THRESHOLD must be between 0 and 100, got {ad_threshold}");
+        }
+
+        let jev_api_key = opt("JEV_API_KEY");
+        if jev_api_key.is_none() {
+            tracing::warn!(
+                "JEV_API_KEY is not set — the semantic profile filter, the message-text scan, \
+                 the advertising guard and the Jev language guess are all disabled"
+            );
+        }
+
         Ok(Self {
             bot_username: req("BOT_USERNAME")?.trim_start_matches('@').to_owned(),
             bot_name: opt("BOT_NAME").unwrap_or_else(|| "NSFW Guard".to_owned()),
@@ -137,6 +216,11 @@ impl Config {
                 .to_owned(),
             detector_timeout: Duration::from_secs(num("DETECTOR_TIMEOUT_SECS", 20)?),
             enable_ocr: flag("ENABLE_OCR", true),
+
+            jev_url: opt("JEV_API_URL").unwrap_or_else(|| DEFAULT_JEV_URL.to_owned()),
+            jev_api_key,
+            jev_model: opt("JEV_MODEL").unwrap_or_else(|| "jev-latest".to_owned()),
+            jev_timeout: Duration::from_secs(num("JEV_TIMEOUT_SECS", 5)?),
             media_max_bytes: num::<u32>("MEDIA_MAX_DOWNLOAD_BYTES", 20 * 1024 * 1024)?,
 
             defaults: GroupDefaults {
@@ -155,6 +239,13 @@ impl Config {
                 media_frames: num::<i16>("DEFAULT_MEDIA_FRAMES", 5)?
                     .clamp(1, crate::db::models::MAX_MEDIA_FRAMES),
                 ban_foreign_bots: flag("DEFAULT_BAN_FOREIGN_BOTS", false),
+                text_scan: flag("DEFAULT_TEXT_SCAN", false),
+                text_threshold,
+                text_action: parsed("DEFAULT_TEXT_ACTION", Action::Delete)?,
+                ad_scan: flag("DEFAULT_AD_SCAN", false),
+                ad_threshold,
+                ad_action: parsed("DEFAULT_AD_ACTION", Action::Warn)?,
+                reaction_scan: flag("DEFAULT_REACTION_SCAN", false),
             },
 
             scan_cache_ttl: Duration::from_secs(num("SCAN_CACHE_TTL_SECS", 86_400)?),

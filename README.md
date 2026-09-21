@@ -11,7 +11,12 @@ hidden advertising.
 - Optional **group media scan** — the photos, GIFs, stickers and videos posted in
   the group, from every member, with its own threshold and its own action
 - GIFs and videos sampled across the whole clip, not judged by their preview frame
-- Instant auto-ban, or delete-only, or mute, or report — per group
+- Optional **text scan** — judges how strongly a message is about subjects the
+  group picks, with its own threshold and action
+- Optional **ad guard** — catches messages whose purpose is to send people
+  somewhere else, and warns rather than deletes by default
+- Optional **reaction scan** — the accounts that react, not just the ones that write
+- Instant auto-ban, or delete-only, or mute, or a public warning, or report — per group
 - Reduce spam and keep communities clean
 
 Four UI languages — English, فارسی, Русский, العربية — picked automatically from
@@ -43,6 +48,7 @@ runs it past a set of independent filters:
 | `name_pattern` | Display name shaped like an ad — invite link, `18+`, `👇 click` |
 | `profile_ocr` | Contact info written *onto* the avatar image |
 | `no_photo_link` | No visible avatar, but a link in the bio — **not used by any preset**, see below |
+| `bio_semantic` | The profile's text read as adult advertising by a language model — catches the obfuscated spellings and new slang a fixed word list cannot |
 | `reputation` | Already banned for this in *N* other groups |
 
 Each group's admins then choose which combination is enough to act on:
@@ -125,12 +131,34 @@ thumbnail.
 ┌──────────┐  long polling   ┌───────────────┐   HTTP    ┌──────────────────┐
 │ Telegram │◄───────────────►│  bot (Rust)   │◄─────────►│ detector (Python)│
 └──────────┘                 │   teloxide    │           │  ONNX + OCR      │
-                             └───────┬───────┘           └──────────────────┘
-                                     │ sqlx
-                             ┌───────▼───────┐
-                             │  PostgreSQL   │
-                             └───────────────┘
+                             └───┬───────┬───┘           └──────────────────┘
+                          sqlx   │       │  HTTPS, optional
+                       ┌─────────▼──┐  ┌─▼──────────────────┐
+                       │ PostgreSQL │  │ Jev (TypeSafe)     │
+                       └────────────┘  │ typed text answers │
+                                       └────────────────────┘
 ```
+
+### Images stay local, text is optional
+
+Two models, two boundaries. **Every image decision is made on your own
+hardware** by the detector container — Jev takes no images at all, so nothing
+about the NSFW pipeline changes whether it is configured or not.
+
+Jev is a "System One" model: it returns a typed, calibrated number rather than
+prose, evaluates every question in one parallel pass, and costs $0.042 per
+million input tokens. That combination is what makes reading ordinary group
+traffic affordable — a group watching six subjects pays for one call at roughly
+the latency of asking one thing.
+
+It powers four things, all of which degrade to "unavailable" with no
+`JEV_API_KEY` set: the `bio_semantic` filter, the text scan, the ad guard, and
+the group language guess. An outage is never read as "this text is clean", and
+the regex word list stays in place underneath as a floor that needs no key.
+
+The trade is privacy: with a key set, profile text — and, if you enable the text
+scan, message text — is sent to a third-party API. Leave the key unset to keep
+every scan on your own host.
 
 ### Two models, in a cascade
 
@@ -232,10 +260,13 @@ message you want to send.
 |---|---|
 | 🎚 **Threshold** | Model confidence required, 0–100%. 30–50% suits most groups. |
 | 🧩 **Filter mode** | Which combination of signals is actionable. |
-| ⚡ **Action** | Ban + delete · Delete only · Mute + delete · Report only. |
+| ⚡ **Action** | Ban + delete · Delete only · Mute + delete · Warn publicly · Report only. |
 | 🕶 **Test mode** | Detect and report, change nothing. |
 | 🛡 **Grace window** | Only scan members below N messages. Long-standing members are skipped, which cuts both false positives and CPU use. |
 | 🖼 **Media scan** | Check the media posted in the group, from every member. Own sub-panel: on/off, its own threshold (90%), its own action (delete), which kinds to cover, and frames sampled per clip. **Off by default.** |
+| 🗯 **Text scan** | Judge what people write. Pick the subjects — sexual content, violence, hate speech, insults, drugs, gambling, scams, politics, religion — then set how strongly a message must be *about* one (70%) and what to do. Needs a Jev key. **Off by default.** |
+| 📣 **Ad guard** | Act on messages whose purpose is to send people elsewhere. Its own threshold (75%) and action (**warn publicly**, the mildest the bot has). A different question from the topics: a topic asks what a message is about, this asks what it is *for*. Needs a Jev key. **Off by default.** |
+| 👍 **Reaction scan** | Run the profile checks on accounts that react to messages, not just those that write them. Nothing of anybody else's is touched — the message under the reaction is never deleted or replied to. Needs no key; needs the bot to be an admin. **Off by default.** |
 | 🌍 **Shared blocklist** | Flag accounts banned for this in other groups, and contribute your own bans back. |
 | 🔔 **My DM alerts** | Per-admin: get a private message on every removal. |
 | 🧹 **Clean up my messages** | Auto-delete the bot's own reports after a TTL. **Off by default.** |
@@ -416,6 +447,12 @@ The bot reads only what Telegram already exposes publicly. It stores scores,
 counts and the evidence strings shown in the Details view — not photos. The
 private-chat detector test stores nothing at all. Images are sent to the local
 detector container over the compose network and never leave your host.
+
+**Text is different, and only if you opt in.** Setting `JEV_API_KEY` sends
+profile text to TypeSafe's API, and enabling the text scan or ad guard sends
+message text as well. Both are clipped to 600 characters and sent as structured
+fields rather than concatenated prose. With no key set, nothing leaves your host
+at all and every text feature reports itself unavailable.
 
 Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 

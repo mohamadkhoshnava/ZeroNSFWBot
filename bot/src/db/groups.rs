@@ -1,7 +1,7 @@
 use anyhow::Result;
 use sqlx::PgPool;
 
-use super::models::{GroupRow, GroupSettings, MAX_MEDIA_FRAMES, MediaKind};
+use super::models::{GroupRow, GroupSettings, MAX_MEDIA_FRAMES, MediaKind, TextTopic};
 use crate::{
     config::GroupDefaults,
     i18n::Lang,
@@ -18,6 +18,8 @@ macro_rules! group_columns {
          custom_filters, nsfw_categories, action, dry_run, grace_messages, delete_bot_messages, \
          bot_message_ttl_secs, global_blocklist, media_scan, media_threshold, \
          media_action, media_kinds, media_frames, ban_foreign_bots, \
+         text_scan, text_topics, text_threshold, text_action, \
+         ad_scan, ad_threshold, ad_action, reaction_scan, \
          member_count, is_active, added_at, updated_at"
     };
 }
@@ -38,8 +40,11 @@ pub async fn get_or_create(
         "INSERT INTO groups (chat_id, title, lang, threshold, policy, action, ",
         "                    dry_run, grace_messages, delete_bot_messages, ",
         "                    bot_message_ttl_secs, media_scan, media_threshold, ",
-        "                    media_action, media_frames, ban_foreign_bots) ",
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) ",
+        "                    media_action, media_frames, ban_foreign_bots, ",
+        "                    text_scan, text_threshold, text_action, ",
+        "                    ad_scan, ad_threshold, ad_action, reaction_scan) ",
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, ",
+        "        $16, $17, $18, $19, $20, $21, $22) ",
         "ON CONFLICT (chat_id) DO UPDATE ",
         "    SET title      = COALESCE(EXCLUDED.title, groups.title), ",
         "        is_active  = TRUE, ",
@@ -62,6 +67,13 @@ pub async fn get_or_create(
     .bind(defaults.media_action.as_str())
     .bind(defaults.media_frames)
     .bind(defaults.ban_foreign_bots)
+    .bind(defaults.text_scan)
+    .bind(defaults.text_threshold)
+    .bind(defaults.text_action.as_str())
+    .bind(defaults.ad_scan)
+    .bind(defaults.ad_threshold)
+    .bind(defaults.ad_action.as_str())
+    .bind(defaults.reaction_scan)
     .fetch_one(pool)
     .await?;
 
@@ -177,6 +189,53 @@ pub async fn set_media_frames(pool: &PgPool, chat_id: i64, frames: i16) -> Resul
     Ok(())
 }
 
+pub async fn set_text_threshold(pool: &PgPool, chat_id: i64, threshold: i16) -> Result<()> {
+    sqlx::query("UPDATE groups SET text_threshold = $2, updated_at = now() WHERE chat_id = $1")
+        .bind(chat_id)
+        .bind(threshold.clamp(0, 100))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn set_text_action(pool: &PgPool, chat_id: i64, action: Action) -> Result<()> {
+    sqlx::query("UPDATE groups SET text_action = $2, updated_at = now() WHERE chat_id = $1")
+        .bind(chat_id)
+        .bind(action.as_str())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Replace the set of subjects the message-text scan watches for.
+pub async fn set_text_topics(pool: &PgPool, chat_id: i64, topics: &[TextTopic]) -> Result<()> {
+    let names: Vec<&str> = topics.iter().map(|t| t.as_str()).collect();
+    sqlx::query("UPDATE groups SET text_topics = $2, updated_at = now() WHERE chat_id = $1")
+        .bind(chat_id)
+        .bind(serde_json::to_value(names)?)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn set_ad_threshold(pool: &PgPool, chat_id: i64, threshold: i16) -> Result<()> {
+    sqlx::query("UPDATE groups SET ad_threshold = $2, updated_at = now() WHERE chat_id = $1")
+        .bind(chat_id)
+        .bind(threshold.clamp(0, 100))
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn set_ad_action(pool: &PgPool, chat_id: i64, action: Action) -> Result<()> {
+    sqlx::query("UPDATE groups SET ad_action = $2, updated_at = now() WHERE chat_id = $1")
+        .bind(chat_id)
+        .bind(action.as_str())
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Flip a boolean column and return its new value.
 ///
 /// The column name is interpolated, which sqlx rightly makes you assert. It is
@@ -206,6 +265,9 @@ pub enum BoolColumn {
     GlobalBlocklist,
     MediaScan,
     BanForeignBots,
+    TextScan,
+    AdScan,
+    ReactionScan,
 }
 
 impl BoolColumn {
@@ -216,6 +278,9 @@ impl BoolColumn {
             BoolColumn::GlobalBlocklist => "global_blocklist",
             BoolColumn::MediaScan => "media_scan",
             BoolColumn::BanForeignBots => "ban_foreign_bots",
+            BoolColumn::TextScan => "text_scan",
+            BoolColumn::AdScan => "ad_scan",
+            BoolColumn::ReactionScan => "reaction_scan",
         }
     }
 }
@@ -241,7 +306,10 @@ pub async fn reset(pool: &PgPool, chat_id: i64, defaults: &GroupDefaults) -> Res
             bot_message_ttl_secs = $8, global_blocklist = TRUE,
             media_scan = $9, media_threshold = $10, media_action = $11,
             media_kinds = '["photo", "animation", "sticker", "video"]',
-            media_frames = $12, ban_foreign_bots = $13, updated_at = now()
+            media_frames = $12, ban_foreign_bots = $13,
+            text_scan = $15, text_topics = $16, text_threshold = $17, text_action = $18,
+            ad_scan = $19, ad_threshold = $20, ad_action = $21, reaction_scan = $22,
+            updated_at = now()
         WHERE chat_id = $1
         "#,
     )
@@ -262,6 +330,21 @@ pub async fn reset(pool: &PgPool, chat_id: i64, defaults: &GroupDefaults) -> Res
     // /reset too. The literal that used to live here is how the old default
     // outlived the code that named it.
     .bind(serde_json::json!(super::models::default_nsfw_categories()))
+    .bind(defaults.text_scan)
+    // Bound rather than written inline for the same reason the categories are:
+    // a change to the default set has to reach /reset too.
+    .bind(serde_json::json!(
+        super::models::default_text_topics()
+            .iter()
+            .map(|t| t.as_str())
+            .collect::<Vec<_>>()
+    ))
+    .bind(defaults.text_threshold)
+    .bind(defaults.text_action.as_str())
+    .bind(defaults.ad_scan)
+    .bind(defaults.ad_threshold)
+    .bind(defaults.ad_action.as_str())
+    .bind(defaults.reaction_scan)
     .execute(pool)
     .await?;
     Ok(())
@@ -313,6 +396,22 @@ pub async fn bump_message_count(pool: &PgPool, chat_id: i64, user_id: i64) -> Re
     .fetch_one(pool)
     .await?;
     Ok(row.0)
+}
+
+/// How many messages this member has sent here, without counting one.
+///
+/// The reaction scan needs the grace window to apply, but a reaction is not a
+/// message and must not advance the counter — otherwise an account could react
+/// its way out of ever being scanned.
+pub async fn message_count(pool: &PgPool, chat_id: i64, user_id: i64) -> Result<i32> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "SELECT message_count FROM group_members WHERE chat_id = $1 AND user_id = $2",
+    )
+    .bind(chat_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map_or(0, |r| r.0))
 }
 
 /// Admins of this group who asked to be DM'd about removals *and* who have

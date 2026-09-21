@@ -9,8 +9,8 @@ use std::{fmt, str::FromStr};
 use serde::{Deserialize, Serialize};
 
 use crate::filters::{
-    F_BIO_KEYWORDS, F_BIO_LINK, F_MESSAGE_MEDIA, F_NAME_PATTERN, F_PROFILE_CHANNEL, F_PROFILE_NSFW,
-    F_PROFILE_OCR, F_REPUTATION, ScanReport,
+    F_BIO_KEYWORDS, F_BIO_LINK, F_BIO_SEMANTIC, F_MESSAGE_MEDIA, F_NAME_PATTERN, F_PROFILE_CHANNEL,
+    F_PROFILE_NSFW, F_PROFILE_OCR, F_REPUTATION, ScanReport,
 };
 
 /// What the bot does to a matched account.
@@ -21,19 +21,55 @@ pub enum Action {
     Ban,
     Delete,
     Mute,
+    /// Reply to the message with a public warning, and change nothing else.
+    ///
+    /// The mildest thing that is still visible to the person who did it, which
+    /// is what an advertising rule wants on a first offence: most people who
+    /// drop a referral link in a group are members, not spam accounts, and
+    /// deleting their message without a word reads as the bot malfunctioning.
+    Warn,
     /// Detect and report, but change nothing.
     Report,
 }
 
 impl Action {
-    pub const ALL: [Action; 4] = [Action::Ban, Action::Delete, Action::Mute, Action::Report];
+    pub const ALL: [Action; 5] = [
+        Action::Ban,
+        Action::Delete,
+        Action::Mute,
+        Action::Warn,
+        Action::Report,
+    ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
             Action::Ban => "ban",
             Action::Delete => "delete",
             Action::Mute => "mute",
+            Action::Warn => "warn",
             Action::Report => "report",
+        }
+    }
+
+    /// How much this action actually does to someone, for picking between two
+    /// findings about the same message. A message that is both an advert and
+    /// off-topic is dealt with once, at the stronger of the two settings.
+    pub const fn severity(self) -> u8 {
+        match self {
+            Action::Report => 0,
+            Action::Warn => 1,
+            Action::Delete => 2,
+            Action::Mute => 3,
+            Action::Ban => 4,
+        }
+    }
+
+    /// The harsher of two actions.
+    pub fn strongest(self, other: Self) -> Self {
+        if other.severity() > self.severity() {
+            other
+        } else {
+            self
         }
     }
 
@@ -43,6 +79,7 @@ impl Action {
             Action::Ban => "action_ban",
             Action::Delete => "action_delete",
             Action::Mute => "action_mute",
+            Action::Warn => "action_warn",
             Action::Report => "action_report",
         }
     }
@@ -62,9 +99,10 @@ impl FromStr for Action {
             "ban" => Ok(Action::Ban),
             "delete" => Ok(Action::Delete),
             "mute" => Ok(Action::Mute),
+            "warn" => Ok(Action::Warn),
             "report" => Ok(Action::Report),
             other => Err(format!(
-                "unknown action {other:?} (supported: ban, delete, mute, report)"
+                "unknown action {other:?} (supported: ban, delete, mute, warn, report)"
             )),
         }
     }
@@ -151,6 +189,7 @@ impl Policy {
                     F_PROFILE_NSFW,
                     F_MESSAGE_MEDIA,
                     F_BIO_KEYWORDS,
+                    F_BIO_SEMANTIC,
                     F_NAME_PATTERN,
                 ]
             }
@@ -160,6 +199,7 @@ impl Policy {
                 F_BIO_LINK,
                 F_PROFILE_CHANNEL,
                 F_BIO_KEYWORDS,
+                F_BIO_SEMANTIC,
                 F_NAME_PATTERN,
                 F_PROFILE_OCR,
             ],
@@ -232,6 +272,20 @@ fn advertises_contact(report: &ScanReport) -> bool {
         || report.triggered(F_PROFILE_CHANNEL)
 }
 
+/// Does the profile *text* read as an adult advertisement?
+///
+/// One bucket, three ways of reaching it: the hardcoded vocabulary list, the
+/// shape of the display name, and Jev's reading of the whole profile. They are
+/// not independent — the model fires on exactly the bios the word list was
+/// written for, and then on the ones it was not — so `strict` must count them
+/// once, or an obfuscated bio (`s3x`, `س‌ک‌س`) that trips both the model and a
+/// loosened pattern would reach the two-signal bar on a single fact.
+fn advertising_vocabulary(report: &ScanReport) -> bool {
+    report.triggered(F_BIO_KEYWORDS)
+        || report.triggered(F_NAME_PATTERN)
+        || report.triggered(F_BIO_SEMANTIC)
+}
+
 /// Apply a group's policy to a completed scan.
 pub fn evaluate(
     report: &ScanReport,
@@ -249,11 +303,7 @@ pub fn evaluate(
             // signal. It used to also accept `no_photo_link` on its own, which
             // banned a real user at a reported 0% NSFW score.
             Policy::NsfwAndContact => nsfw_image(report) && advertises_contact(report),
-            Policy::NsfwOrKeywords => {
-                nsfw_image(report)
-                    || report.triggered(F_BIO_KEYWORDS)
-                    || report.triggered(F_NAME_PATTERN)
-            }
+            Policy::NsfwOrKeywords => nsfw_image(report) || advertising_vocabulary(report),
             // Two independent signals. Profile-NSFW and message-NSFW are not
             // independent enough on their own, so image signals count once.
             //
@@ -269,8 +319,7 @@ pub fn evaluate(
                 // bio, or anyone who both links and pins their own channel.
                 let image = u8::from(nsfw_image(report));
                 let contact = u8::from(advertises_contact(report));
-                let vocabulary =
-                    u8::from(report.triggered(F_BIO_KEYWORDS) || report.triggered(F_NAME_PATTERN));
+                let vocabulary = u8::from(advertising_vocabulary(report));
                 image + contact + vocabulary >= 2
             }
             // An empty custom list would otherwise match everything, so it is

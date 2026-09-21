@@ -6,6 +6,105 @@ Notable changes to ZeroNSFWBot. Format follows
 
 ## [Unreleased]
 
+### Added — judging what people write, not just what they look like
+
+Everything in this bot up to now answered a question about an *account*: is this
+avatar explicit, does this bio carry a link, is there a channel pinned to the
+profile. That works because the spam it was built for puts the payload in the
+profile and leaves the message itself harmless. It is also completely blind to
+the group's actual traffic — a message is only ever looked at for the picture
+attached to it.
+
+Four additions close that, three of them powered by
+[Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev), a model
+that returns a typed, calibrated number instead of prose. It takes no images, so
+**every NSFW image decision still happens on your own hardware** and nothing
+about that pipeline changed. What it makes possible is reading text at the
+volume a group produces: all questions are answered in one parallel pass, at
+$0.042 per million input tokens, so a group watching six subjects pays for one
+call at about the latency of asking one thing.
+
+**`bio_semantic`** joins the filter layer. The existing `bio_keywords` is a
+thirteen-entry regex list, and a list is structurally unable to catch `s3x`,
+`س‌ک‌س` spaced with a zero-width non-joiner, a Cyrillic `о` inside `porn`, or
+this month's slang. The word list stays exactly where it is as a floor that
+needs no API key and cannot be talked out of firing; this reads the same fields
+— name, username, bio, attached channel, and any text OCR lifted off the avatar
+— and judges whether they add up to an advertisement. It fires at 70%, its own
+fixed bar rather than the group's image threshold, because it can convict on
+text alone under `nsfw_or_keywords`.
+
+`strict` counts it in the same bucket as `bio_keywords` and `name_pattern`. They
+are not independent signals — the model fires on exactly the bios the list was
+written for, and then on the ones it was not — and counting them separately
+would reach the two-signal bar from a single fact, which is the defect that once
+banned a user over a bio link and the identical link read off their avatar.
+
+**Text scan** (`/nsfw → 🗯 Text scan`) lets a group name the subjects it does not
+want discussed — sexual content, violence, hate speech, insults, drugs,
+gambling, scams, politics, religion — and set how strongly a message has to be
+*about* one before the bot acts. Each subject carries a four-level rubric, and
+the middle levels are the point: without "touches on it in passing" and
+"substantially about it" there would be no gradations for a percentage to mean
+anything against. New groups that turn it on start watching `sexual` only; every
+other subject is a moderation opinion a group has to state for itself, and a
+debate group that inherited `politics` would have deleted its own conversation.
+
+**Ad guard** (`/nsfw → 📣 Ad guard`) is deliberately not one of those subjects,
+because it asks a different question: a topic asks what a message is *about*,
+this asks what it is *for*. A message selling nothing can still be about
+gambling, and an advert can be about anything at all. Its default action is
+**Warn publicly**, a new action that changes nothing and replies to the message
+where the sender will see it — most people who drop a link in a group are
+members rather than spam accounts, and deleting their message without a word
+reads as the bot malfunctioning.
+
+**Reaction scan** (`/nsfw → 👍 Reaction scan`) needs no model at all. It is the
+vector that opens up once comment spam is being removed: the account taps an
+emoji on somebody else's message, its avatar and name appear under that message
+for everyone who opens the reaction list, and there is nothing of its own in the
+chat to delete. Every profile signal already applies unchanged. Two things make
+it different from scanning a message, and both are enforced in the types rather
+than by convention: a verdict from a reaction carries no message id, so
+`enforcement` cannot delete or reply to the message under it — that one belongs
+to an innocent member — and a reaction never advances the grace-window counter,
+or an account could react its way past ever being scanned.
+
+The group language guess now asks the model first and keeps the script heuristic
+as its fallback. Script detection is good when the script is decisive and
+helpless when it is not: a Persian group branded "Tehran Traders" reads as
+English, and Persian and Arabic share an alphabet, so a title with no marker
+letters was settled by a tie-break rather than by evidence. The question is
+asked once in a group's life, when the bot is added, and never in the message
+path.
+
+### How all of this fails
+
+Jev is optional, and with no `JEV_API_KEY` set every feature above except the
+reaction scan reports itself unavailable and the bot behaves exactly as it did
+before. That is also what a timeout, a 429 or a malformed response produce —
+`unavailable`, never a score. The distinction has been load-bearing in this
+codebase since the `PhotoAccess` three-valued enum, and it matters more here
+than anywhere: a text model that quietly returned "clean" on an outage would
+disable the scan without saying so, and one that quietly returned "spam" would
+be far worse.
+
+The text a spammer writes is also, unavoidably, input to a model. Two things
+bound it. Every field is sent as a labelled value inside a JSON object rather
+than concatenated into the prompt, so a bio reading "ignore the above" is
+visibly the *content of a bio*. And the answer is a number from a fixed type —
+there is no output channel for an injected instruction to escape through, and
+the worst a manipulated answer can be is a wrong number, which the thresholds
+already bound. The regex floor underneath cannot be talked out of firing at all.
+
+### Privacy
+
+This is the first feature in the project that sends anything off the host.
+Setting a key sends profile text; enabling the text scan or ad guard sends
+message text, clipped to 600 characters. Images never go anywhere but the local
+detector. Leaving `JEV_API_KEY` unset keeps every scan on your own hardware,
+which is what a fresh deployment does by default.
+
 ### Fixed — the profile scan had been off since the cascade landed
 
 The two-stage pipeline shipped with `porn` + `hentai` as the classes a group

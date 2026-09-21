@@ -13,7 +13,7 @@ use teloxide::{
 };
 
 use crate::{
-    App, Tg, db, i18n, t,
+    App, Tg, db, i18n, jev, t,
     ui::callbacks::{CallbackAction, PanelView},
     util::text::escape_html,
 };
@@ -51,11 +51,31 @@ pub async fn handle_my_chat_member(
         .ok()
         .and_then(|full| full.description().map(str::to_owned));
 
-    let detected = i18n::detect_group_lang(
-        chat.title().unwrap_or_default(),
-        description.as_deref(),
-        app.cfg.defaults.lang,
-    );
+    let title = chat.title().unwrap_or_default();
+
+    // Script detection is good when the script is decisive and helpless when
+    // it is not: a Persian group branded "Tehran Traders" reads as English,
+    // and Persian and Arabic share an alphabet, so a title with no marker
+    // letters is settled by a tie-break rather than by evidence. Asking the
+    // model is one call, once in a group's life, at the moment the bot is
+    // added — never in the message path.
+    let heuristic = i18n::detect_group_lang(title, description.as_deref(), app.cfg.defaults.lang);
+    let detected = match jev::lang::detect(&app.jev, title, description.as_deref()).await {
+        Some(lang) => {
+            if lang != heuristic {
+                tracing::info!(
+                    chat_id,
+                    heuristic = heuristic.code(),
+                    chosen = lang.code(),
+                    "Jev disagreed with the script heuristic about the group language"
+                );
+            }
+            lang
+        }
+        // No key, no confident answer, or the request failed: the heuristic is
+        // still a perfectly good guess, and the admin can change it in a tap.
+        None => heuristic,
+    };
 
     let settings =
         db::groups::get_or_create(&app.db, chat_id, chat.title(), &app.cfg.defaults, detected)

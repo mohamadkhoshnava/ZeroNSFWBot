@@ -6,6 +6,7 @@ pub mod commands;
 pub mod group;
 pub mod member;
 pub mod private;
+pub mod reaction;
 
 use teloxide::{dispatching::UpdateHandler, prelude::*};
 
@@ -36,4 +37,8 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
         // only way to see a bot that arrived through an invite link rather than
         // being added by a member.
         .branch(Update::filter_chat_member().endpoint(botguard::on_chat_member))
+        // Likewise: registering this is what makes teloxide ask for
+        // `message_reaction` updates, which Telegram only sends to an admin
+        // bot and never sends at all unless they are requested.
+        .branch(Update::filter_message_reaction_updated().endpoint(reaction::handle))
 }
