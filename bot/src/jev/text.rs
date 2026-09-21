@@ -5,10 +5,15 @@
 //! pays for one call at roughly the latency of asking one thing — which is the
 //! only reason reading every message in a busy group is affordable.
 
+use std::sync::Arc;
+
 use serde_json::json;
 
 use super::{Answers, Ask, JevClient, Question, clip};
-use crate::db::models::{GroupSettings, TextTopic};
+use crate::{
+    App,
+    db::models::{GroupSettings, TextTopic},
+};
 
 /// Question id for the advertising judgement. Deliberately not a topic name,
 /// so it can never collide with one.
@@ -54,6 +59,42 @@ impl TextVerdict {
     pub fn is_empty(&self) -> bool {
         self.topic.is_none() && self.advertising.is_none()
     }
+}
+
+/// Judge one message's text, reusing an answer if this group has already
+/// judged these exact words.
+///
+/// A group runs on a handful of phrases. "سلام", "مرسی", "ok", the same
+/// forwarded advert pasted by four accounts in a row — each one used to cost
+/// its own request, and the answer was always going to be the same.
+///
+/// Only a real answer is remembered. A `None` is "we do not know", and caching
+/// that would turn one failed request into hours of not looking.
+pub async fn scan_cached(
+    app: &Arc<App>,
+    settings: &GroupSettings,
+    text: &str,
+) -> Option<TextVerdict> {
+    let key = (settings.chat_id, cache_key(text));
+
+    if let Some(hit) = app.text_verdicts.get(&key).await {
+        tracing::debug!(chat_id = settings.chat_id, "text verdict served from cache");
+        return Some(hit);
+    }
+
+    let verdict = scan(&app.jev, settings, text).await?;
+    app.text_verdicts.insert(key, verdict.clone()).await;
+    Some(verdict)
+}
+
+/// What counts as "the same message".
+///
+/// Deliberately timid. Case and stray whitespace are noise — "OK" and "ok  "
+/// are one message — but nothing else is folded together, because every
+/// further normalisation is a way for one message to inherit a verdict that
+/// was never about it.
+fn cache_key(text: &str) -> String {
+    clip(&text.split_whitespace().collect::<Vec<_>>().join(" ")).to_lowercase()
 }
 
 /// Judge one message's text against a group's settings.
@@ -482,6 +523,27 @@ mod tests {
             gate * 5 < full,
             "gate is {gate} chars against a {full}-char pass — not worth its own request"
         );
+    }
+
+    /// Case and stray whitespace are noise; nothing else is folded together.
+    #[test]
+    fn the_cache_key_forgives_only_spacing_and_case() {
+        assert_eq!(cache_key("  OK   then  "), cache_key("ok then"));
+        assert_eq!(cache_key("سلام\n\nبچه‌ها"), cache_key("سلام بچه‌ها"));
+
+        // Everything else stays distinct. Folding punctuation or digits would
+        // let one message inherit a verdict that was never about it.
+        assert_ne!(cache_key("join now"), cache_key("join now!"));
+        assert_ne!(cache_key("@channel_a"), cache_key("@channel_b"));
+        assert_ne!(cache_key("سلام"), cache_key("سلام؟"));
+    }
+
+    /// The key is bounded, so one enormous message cannot sit in the cache as
+    /// a 4096-character key.
+    #[test]
+    fn the_cache_key_is_bounded() {
+        let huge = "لورم ایپسوم ".repeat(500);
+        assert!(cache_key(&huge).chars().count() <= super::super::MAX_FIELD_CHARS + 1);
     }
 
     /// A group with the scan on but nothing selected asks nothing at all.

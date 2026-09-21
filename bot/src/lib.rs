@@ -56,6 +56,14 @@ const CLEAN_USER_TTL: Duration = Duration::from_secs(15 * 60);
 /// identifies exact bytes. The ceiling is memory, not staleness.
 const MEDIA_SCORE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
 
+/// How long a judged piece of message text is remembered.
+///
+/// Long, because the answer cannot go stale on its own: the same words in the
+/// same group get the same verdict. What *can* change it is the group's own
+/// settings, and those invalidate this group's entries explicitly rather than
+/// waiting for the clock.
+const TEXT_VERDICT_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+
 /// Shared, immutable-after-startup application state.
 pub struct App {
     pub cfg: Config,
@@ -75,6 +83,19 @@ pub struct App {
     /// circulate endlessly, and that id is stable forever, so a popular sticker
     /// is downloaded and scored once instead of on every post.
     pub media_scores: Cache<String, crate::scan::ImageScoring>,
+    /// Verdicts for message text already judged, keyed by group and by the
+    /// text itself.
+    ///
+    /// A group runs on a handful of phrases: "سلام", "مرسی", "ok", "👍 دمت
+    /// گرم", the same forwarded advert pasted by four accounts in a row. Each
+    /// one used to cost its own Jev request. Keyed by the text rather than by
+    /// a hash of it, so a collision cannot hand one message another's verdict
+    /// — the entries are short and the cache is bounded.
+    ///
+    /// Keyed by group as well as by text because the verdict is already
+    /// measured against *that group's* topics and thresholds; the same
+    /// sentence is a deletion in one group and ordinary talk in another.
+    pub text_verdicts: Cache<(i64, String), crate::jev::text::TextVerdict>,
     pub broadcasts: BroadcastRegistry,
     pub bot_id: i64,
     pub started_at: DateTime<Utc>,
@@ -123,6 +144,14 @@ impl App {
             media_scores: Cache::builder()
                 .time_to_live(MEDIA_SCORE_TTL)
                 .max_capacity(50_000)
+                .build(),
+            text_verdicts: Cache::builder()
+                .time_to_live(TEXT_VERDICT_TTL)
+                .max_capacity(50_000)
+                // Lets a settings change drop just that group's verdicts, so a
+                // new threshold applies to the next message rather than up to
+                // six hours later.
+                .support_invalidation_closures()
                 .build(),
             broadcasts: BroadcastRegistry::new(),
             filters: FilterRegistry::with_defaults(),

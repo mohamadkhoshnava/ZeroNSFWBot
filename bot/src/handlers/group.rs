@@ -130,7 +130,7 @@ async fn scan_message(bot: &Tg, msg: &Message, app: &Arc<App>) -> anyhow::Result
     // question, because the model evaluates them in parallel against the same
     // state. Asking six things costs about what asking one costs.
     if text_pass
-        && let Some(found) = jev::text::scan(&app.jev, &settings, message_text).await
+        && let Some(found) = jev::text::scan_cached(app, &settings, message_text).await
         && !found.is_empty()
     {
         return text_verdict(app, bot, &settings, user, msg, found).await;

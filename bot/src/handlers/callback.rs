@@ -190,6 +190,11 @@ async fn group_setting(
         let _ = app
             .recent_clean
             .invalidate_entries_if(move |(cached_chat, _), _| *cached_chat == chat);
+        // Text verdicts are already measured against this group's topics and
+        // thresholds, so a change to either makes every stored one wrong.
+        let _ = app
+            .text_verdicts
+            .invalidate_entries_if(move |(cached_chat, _), _| *cached_chat == chat);
     }
 
     bot.answer_callback_query(query.id.clone())

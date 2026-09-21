@@ -111,6 +111,27 @@ where it would cost more than it saves, and a gate that fails or is unsure
 opens the full pass rather than skipping it — failing the other way would turn
 an outage into a silently disabled scan.
 
+A group also runs on a handful of phrases — "سلام", "مرسی", "ok", the same
+forwarded advert pasted by four accounts in a row — and each one used to cost
+its own request for an answer that was never going to differ. Verdicts are now
+remembered per group, keyed by the text itself rather than a hash of it, so a
+collision cannot hand one message another's verdict. Only real answers are
+cached: a failed request is "we do not know", and remembering that would turn
+one outage into six hours of not looking. A change to the group's topics or
+thresholds drops that group's entries, because the stored verdict was already
+measured against the old ones.
+
+One design that looks cheaper and is not: replacing the nine score questions
+with a single `choice` over the topics plus "none". It is one request at 798
+tokens against a full pass of 1434, and it was tested rather than assumed. It
+loses the axis the rubrics exist for. "این فیلمه یه صحنه سکسی داشت که سانسور
+شده بود" — an ordinary sentence about film censorship — scores 39% on the
+"passing mention" level of the sexual rubric and survives; asked to pick the
+nearest label, the model answers `sexual` at 0.78 and the message is deleted.
+It is not cheaper either, once the gate is in front: the gate settles nine out
+of ten messages for 406 tokens, so the expensive pass almost never runs, while
+a single choice question costs its 798 on every message.
+
 ### How all of this fails
 
 Jev is optional, and with no `JEV_API_KEY` set every feature above except the
