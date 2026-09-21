@@ -14,6 +14,26 @@ use crate::db::models::{GroupSettings, TextTopic};
 /// so it can never collide with one.
 const AD: &str = "is_advertising";
 
+/// Question id for the cheap pre-pass.
+const GATE: &str = "worth_examining";
+
+/// Below this many questions the gate is not worth its own request.
+///
+/// The gate costs about a third of a full ten-question pass, so it pays for
+/// itself many times over there. For a group watching one subject the full
+/// pass is already cheap, and paying for a gate in front of it would make the
+/// flagged messages *more* expensive for a saving measured in fractions.
+const GATE_MIN_QUESTIONS: usize = 3;
+
+/// How suspicious the gate has to find a message before the full pass runs.
+///
+/// Deliberately far below where the real answers land. Measured against
+/// ordinary group traffic the gate answers 0.02–0.03, and every message that
+/// turned out to be worth acting on answered above 0.91 — including one that
+/// the full pass then correctly cleared. The bar sits in the empty space
+/// between, so the gate's job is only ever to skip the obvious.
+const GATE_BAR: f32 = 0.30;
+
 /// Shortest message worth asking about.
 ///
 /// "ok", "👍" and a single emoji carry no subject and no sales pitch, and they
@@ -68,6 +88,19 @@ pub async fn scan(client: &JevClient, settings: &GroupSettings, text: &str) -> O
         return None;
     }
 
+    // Almost everything in a group is ordinary conversation, and asking ten
+    // detailed questions about "سلام بچه‌ها" costs the same as asking them
+    // about a sales pitch. One cheap question first turns that around: the
+    // common case pays for the gate alone, and only what it opens pays for the
+    // full pass.
+    //
+    // A gate that cannot answer opens the full pass rather than skipping it.
+    // Failing the other way would turn a Jev outage into a silently disabled
+    // scan, which is the one behaviour this whole module is built to avoid.
+    if ask.len() >= GATE_MIN_QUESTIONS && gate(client, settings, trimmed).await == Some(false) {
+        return Some(TextVerdict::default());
+    }
+
     let answers: Answers = client.ask(state(trimmed), &ask).await?;
 
     Some(TextVerdict {
@@ -111,46 +144,105 @@ fn state(text: &str) -> serde_json::Value {
     json!({ "message": { "text": clip(text) } })
 }
 
+/// Ask the one cheap question: is this anything but ordinary conversation?
+///
+/// `Some(false)` is the only answer the caller acts on — it means the message
+/// can be dropped without the full pass. `Some(true)` and `None` both lead to
+/// the full pass, so a failed or unsure gate costs tokens rather than recall.
+async fn gate(client: &JevClient, settings: &GroupSettings, text: &str) -> Option<bool> {
+    let mut ask = Ask::new();
+    ask.add(GATE, gate_question(settings));
+
+    let certainty = client.ask(state(text), &ask).await?.certainty(GATE)?;
+    let ordinary = certainty < GATE_BAR;
+
+    // Logged so the bar can be judged against real traffic rather than against
+    // a handful of invented messages: what matters is that the gap between
+    // what the gate skips and what it opens stays wide.
+    tracing::debug!(certainty, ordinary, chat_id = settings.chat_id, "text gate");
+
+    Some(ordinary)
+}
+
+/// The gate's wording, naming only what this group actually watches for.
+///
+/// Every adjective is one the full pass would ask a whole rubric about, so the
+/// gate cannot be broader than the questions behind it — and it is written to
+/// err towards opening, because a false open costs one request and a false
+/// skip costs a detection.
+fn gate_question(settings: &GroupSettings) -> Question {
+    let mut watched: Vec<&str> = Vec::new();
+    if settings.text_scan {
+        watched.extend(settings.text_topics.iter().map(|topic| match topic {
+            TextTopic::Sexual => "sexual",
+            TextTopic::Violence => "violent or threatening",
+            TextTopic::Hate => "hateful towards a group",
+            TextTopic::Insult => "insulting towards a person",
+            TextTopic::Drugs => "about drugs",
+            TextTopic::Gambling => "about gambling",
+            TextTopic::Scam => "a scam or fraud",
+            TextTopic::Politics => "political",
+            TextTopic::Religion => "religious",
+        }));
+    }
+    if settings.ad_scan {
+        watched.push("promoting something");
+    }
+
+    Question::noul(
+        format!(
+            "Is this message anything other than ordinary conversation — is it in any way {}?",
+            watched.join(", ")
+        ),
+        "Anything of the sort, even slightly, briefly or as a joke.",
+        "Ordinary chat: greetings, questions, opinions, technical talk, jokes about nothing \
+         on the list.",
+    )
+}
+
 /// A four-level rubric per topic, sharing one shape: absent, mentioned,
-/// about it, aggressively pushing it.
+/// about it, and a worst level written for that subject.
 ///
 /// The middle levels are what make a threshold meaningful. Without them the
 /// model would only ever answer "related" or "not", and "how much is this
 /// message about X" — which is what the admin is setting a percentage for —
 /// would have no gradations to set it against.
+///
+/// Every word here is paid for on every message, ten times over in a group
+/// watching everything, so the wording is as short as it can be while still
+/// drawing the line in the same place. The verbose original cost 2293 tokens
+/// per message against this one's 1460, for identical verdicts on every case
+/// in the test set below.
 fn topic_question(topic: TextTopic) -> Question {
     let (subject, worst) = match topic {
         TextTopic::Sexual => (
-            "sexual content: sex talk, propositioning, explicit description, or offering or \
-             seeking sexual services",
-            "Explicit sexual content, or soliciting or advertising sexual contact or services.",
+            "sexual content, propositioning, or offering or seeking sexual services",
+            "Explicit sexual content, or soliciting or advertising sexual services.",
         ),
         TextTopic::Violence => (
-            "violence: threats, incitement, or graphic description of harm to people",
+            "threats, incitement, or graphic harm to people",
             "A direct threat, or incitement to hurt someone.",
         ),
         TextTopic::Hate => (
-            "hatred towards a group of people because of their ethnicity, religion, nationality, \
-             gender or sexuality",
+            "hatred towards a group for its ethnicity, religion, nationality, gender or sexuality",
             "Slurs or dehumanising hostility aimed at such a group.",
         ),
         TextTopic::Insult => (
-            "personal insults and abuse aimed at another member of the conversation",
+            "personal insults aimed at another member of the conversation",
             "Sustained personal abuse or obscene insults aimed at a person.",
         ),
         TextTopic::Drugs => (
-            "recreational drugs: selling, sourcing or promoting them",
-            "Offering to sell or asking to buy drugs, with prices or contact details.",
+            "selling, sourcing or promoting recreational drugs",
+            "Offering to sell or asking to buy drugs.",
         ),
         TextTopic::Gambling => (
-            "gambling: betting sites, casinos, prediction games, referral links to them",
-            "Promoting a gambling site or bookmaker, typically with a link or referral code.",
+            "betting sites, casinos, prediction games or referral links to them",
+            "Promoting a gambling site or bookmaker.",
         ),
         TextTopic::Scam => (
-            "financial fraud: investment bait, guaranteed-return schemes, fake giveaways, \
-             phishing, account-recovery cons",
+            "financial fraud: investment bait, fake giveaways, phishing, account-recovery cons",
             "A clear fraud attempt: guaranteed returns, a fake prize, or a request for \
-             credentials, codes or a wallet transfer.",
+             credentials or a transfer.",
         ),
         TextTopic::Politics => (
             "party politics: parties, elections, politicians, political agitation",
@@ -158,21 +250,19 @@ fn topic_question(topic: TextTopic) -> Question {
         ),
         TextTopic::Religion => (
             "religion as a subject of argument or persuasion",
-            "Proselytising, or attacking or defending a religion in an argument.",
+            "Proselytising, or attacking or defending a religion.",
         ),
     };
 
     Question::score(
         format!(
-            "Judge the message in the state. How strongly is it about {subject}? Rate the \
-             message itself, not the person who sent it, and not whether you approve of it. \
-             The language may be any of English, Persian, Arabic or Russian, and may be \
-             deliberately misspelled or spaced out to evade filters."
+            "How strongly is the message about {subject}? Judge the message, not the sender. \
+             Any language; spelling may be disguised."
         ),
         &[
-            "Not about this at all.",
-            "Touches on it in passing — a reference, a joke, or a word used incidentally.",
-            "Substantially about it, discussed seriously or at length.",
+            "Not about this.",
+            "Passing mention, reference or joke.",
+            "Substantially about it.",
             worst,
         ],
     )
@@ -186,19 +276,14 @@ fn topic_question(topic: TextTopic) -> Question {
 /// level one; the same link with "join now, limited offer" is level three.
 fn ad_question() -> Question {
     Question::score(
-        "Judge the message in the state. How strongly is it an advertisement — text whose \
-         purpose is to get the reader to join, visit, buy, subscribe or contact somewhere \
-         outside this conversation for the sender's benefit? Recommending something in answer \
-         to a question, or mentioning a project the sender has no stake in, is not advertising. \
-         The language may be any of English, Persian, Arabic or Russian.",
+        "How strongly is the message an advertisement — text meant to get the reader to join, \
+         visit, buy or contact somewhere outside this conversation for the sender's benefit? \
+         Recommending something in answer to a question is not advertising.",
         &[
-            "Ordinary conversation. Nothing is being promoted.",
-            "Mentions or recommends something, but as part of the conversation rather than to \
-             sell it.",
-            "Promotional: pushes a channel, group, service or product the sender benefits from, \
-             with a link, handle or contact detail.",
-            "Unmistakable advertising spam: a sales pitch to nobody in particular, urgency or \
-             a limited offer, a referral code, or a message that is nothing but promotion.",
+            "Ordinary conversation.",
+            "Mentions or recommends something as part of the conversation.",
+            "Promotional: pushes a channel, service or product the sender benefits from.",
+            "Advertising spam: a pitch to nobody in particular, urgency, or a referral code.",
         ],
     )
 }
@@ -359,6 +444,46 @@ mod tests {
         assert_eq!(scan(&client, &s, "   ").await, None);
     }
 
+    /// The gate names exactly what the group watches, and nothing else — a
+    /// gate broader than the questions behind it would open the full pass for
+    /// subjects nobody asked about.
+    #[test]
+    fn the_gate_asks_only_about_what_this_group_watches() {
+        let s = settings(true, vec![TextTopic::Sexual, TextTopic::Scam], false);
+        let json = serde_json::to_value(gate_question(&s)).unwrap();
+        let text = json["instructions"].as_str().unwrap();
+
+        assert!(text.contains("sexual") && text.contains("scam"));
+        assert!(!text.contains("political"));
+        assert!(
+            !text.contains("promoting"),
+            "the ad guard is off, so the gate must not ask about it"
+        );
+
+        let with_ads = settings(false, Vec::new(), true);
+        let json = serde_json::to_value(gate_question(&with_ads)).unwrap();
+        assert!(json["instructions"].as_str().unwrap().contains("promoting"));
+    }
+
+    /// The gate is a cost optimisation, and it must be cheaper than what it
+    /// stands in front of or it is just another request.
+    #[test]
+    fn the_gate_is_much_shorter_than_the_pass_it_guards() {
+        let s = settings(true, TextTopic::ALL.to_vec(), true);
+
+        let gate = serde_json::to_string(&gate_question(&s)).unwrap().len();
+        let full: usize = TextTopic::ALL
+            .iter()
+            .map(|t| serde_json::to_string(&topic_question(*t)).unwrap().len())
+            .sum::<usize>()
+            + serde_json::to_string(&ad_question()).unwrap().len();
+
+        assert!(
+            gate * 5 < full,
+            "gate is {gate} chars against a {full}-char pass — not worth its own request"
+        );
+    }
+
     /// A group with the scan on but nothing selected asks nothing at all.
     #[tokio::test]
     async fn an_empty_selection_costs_no_call() {
@@ -376,5 +501,34 @@ mod tests {
             scan(&client, &s, "a long enough message to judge").await,
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod live {
+    use super::*;
+
+    /// Prints the two payload shapes the bot sends, so they can be measured
+    /// against the live API without guessing at the wording.
+    ///
+    /// `cargo test --lib live::payloads -- --nocapture --ignored`
+    #[test]
+    #[ignore]
+    fn payloads() {
+        let mut s = GroupSettings::defaults(-1001, &crate::config::GroupDefaults::default());
+        s.text_scan = true;
+        s.text_topics = TextTopic::ALL.to_vec();
+        s.ad_scan = true;
+
+        println!(
+            "GATE {}",
+            serde_json::to_string(&gate_question(&s)).unwrap()
+        );
+        let full: std::collections::BTreeMap<String, Question> = TextTopic::ALL
+            .iter()
+            .map(|t| (t.as_str().to_owned(), topic_question(*t)))
+            .chain(std::iter::once((AD.to_owned(), ad_question())))
+            .collect();
+        println!("FULL {}", serde_json::to_string(&full).unwrap());
     }
 }

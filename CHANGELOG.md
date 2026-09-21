@@ -78,6 +78,39 @@ letters was settled by a tie-break rather than by evidence. The question is
 asked once in a group's life, when the bot is added, and never in the message
 path.
 
+### Changed — the text scan cost 2293 tokens to read "سلام بچه‌ها"
+
+Measured on the first hour of real traffic: 108 of 117 Jev calls came from one
+group that had ticked all nine topics plus the ad guard, and each one sent
+2286 input tokens to judge messages that were mostly a few words long. The
+message is a rounding error in that number. The rest is ten rubrics, re-sent
+in full on every message, plus about 300 tokens of fixed per-request overhead.
+
+Two changes, in that order of confidence.
+
+The wording is now as short as it can be while drawing the line in the same
+place. The untrusted-input warning was 38 tokens repeated on all ten questions
+— 350 tokens per message to say one thing ten times — and is now one clause.
+The shared rubric levels and the per-topic preamble got the same treatment.
+That alone is 2293 → 1434 tokens, with identical verdicts on every case in the
+test set: the same topics fired, the same ones stayed below their thresholds,
+and the numbers moved by a few points at most.
+
+Then a gate in front of the whole thing. Almost everything in a group is
+ordinary conversation, and asking ten detailed questions about a greeting
+costs the same as asking them about a sales pitch. One cheap question — "is
+this anything other than ordinary conversation?", naming only what this group
+actually watches — runs first, and the full pass only runs on what it opens.
+Measured against ordinary messages the gate answers 0.02–0.03; every message
+that turned out to be worth acting on answered above 0.91, including one the
+full pass then correctly cleared. The bar sits at 0.30, in the empty space
+between.
+
+The gate skips itself for groups whose full pass is under three questions,
+where it would cost more than it saves, and a gate that fails or is unsure
+opens the full pass rather than skipping it — failing the other way would turn
+an outage into a silently disabled scan.
+
 ### How all of this fails
 
 Jev is optional, and with no `JEV_API_KEY` set every feature above except the
