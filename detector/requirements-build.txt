@@ -13,4 +13,4 @@ transformers==5.15.0
 onnx==1.22.0
 # torch >=2.6 defaults `torch.onnx.export` to the dynamo exporter, which imports
 # onnxscript. Without it the export dies with a bare ModuleNotFoundError.
-onnxscript==0.7.1
+onnxscript==0.7.2
