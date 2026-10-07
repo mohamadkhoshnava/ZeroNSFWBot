@@ -31,6 +31,12 @@ async fn scan_message(bot: &Tg, msg: &Message, app: &Arc<App>) -> anyhow::Result
     // arrival is the only moment a spam bot is visible to us at all.
     botguard::on_new_members(bot, msg, app).await?;
 
+    // A message written by a bot, or sent through one, is judged by the bot
+    // guard and never scanned as a person's: it has no profile to look at.
+    if botguard::on_bot_message(bot, msg, app).await? {
+        return Ok(());
+    }
+
     // No `from` means an anonymous admin or a channel posting as itself —
     // neither is a spam account with a profile to scan.
     let Some(user) = msg.from.as_ref() else {

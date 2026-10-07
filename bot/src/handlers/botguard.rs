@@ -25,7 +25,10 @@
 //!   itself in through an invite link. It costs an extra `allowed_updates`
 //!   entry, which teloxide derives from the handler tree.
 //!
-//! Neither can enumerate the bots that were already sitting in the group when
+//! Whatever a bot does manage to get delivered — its own message, or a human
+//! sending its inline result — is judged by [`on_bot_message`] as well.
+//!
+//! Neither arrival path can enumerate the bots that were already sitting in the group when
 //! the switch was turned on; Telegram has no "list members" call for that.
 
 use std::sync::Arc;
@@ -62,6 +65,75 @@ pub async fn on_new_members(bot: &Tg, msg: &Message, app: &Arc<App>) -> anyhow::
     }
 
     Ok(())
+}
+
+/// A message that a bot wrote, or that was sent *through* one.
+///
+/// Returns whether the message was removed, so the caller can stop treating it
+/// as ordinary traffic. Two shapes reach here:
+///
+/// * `from` is a bot — Telegram does not normally deliver these to another
+///   bot, but whatever does arrive is judged rather than waved through, since
+///   skipping it is exactly how a locked group stayed open.
+/// * `via_bot` is set — a member picked an inline result, so the sender is a
+///   human but the content is the bot's. Same rule, except an admin's own
+///   inline use is theirs to make and is left alone.
+pub async fn on_bot_message(bot: &Tg, msg: &Message, app: &Arc<App>) -> anyhow::Result<bool> {
+    let author_is_bot = msg.from.as_ref().is_some_and(|user| user.is_bot);
+    let culprit = if author_is_bot {
+        msg.from.as_ref()
+    } else {
+        msg.via_bot.as_ref()
+    };
+    let Some(culprit) = culprit else {
+        return Ok(false);
+    };
+    if culprit.id.0 as i64 == app.bot_id {
+        return Ok(false);
+    }
+
+    let Some(settings) = db::groups::get(&app.db, msg.chat.id.0).await? else {
+        return Ok(false);
+    };
+    if !settings.ban_foreign_bots {
+        return Ok(false);
+    }
+
+    let admins = app.admins.get(bot, msg.chat.id, app.bot_id).await;
+
+    if !author_is_bot
+        && let Some(sender) = msg.from.as_ref()
+        && (admins.is_admin(sender.id.0 as i64) || app.cfg.is_super_admin(sender.id.0 as i64))
+    {
+        return Ok(false);
+    }
+
+    match verdict(culprit.id.0 as i64, app.bot_id, &admins) {
+        Verdict::Leave => return Ok(false),
+        Verdict::Powerless => {
+            tracing::warn!(
+                chat_id = msg.chat.id.0,
+                user_id = culprit.id.0,
+                "bot guard is on but I cannot restrict members here"
+            );
+            return Ok(false);
+        }
+        Verdict::Ban => {}
+    }
+
+    let deleted = match bot.delete_message(msg.chat.id, msg.id).await {
+        Ok(_) => true,
+        Err(err) => {
+            tracing::debug!(chat_id = msg.chat.id.0, %err, "could not delete a bot's message");
+            false
+        }
+    };
+
+    // Said once, when the bot is first removed. An inline bot is not a member
+    // and keeps being used, so announcing every time would be its own spam.
+    ban(bot, app, &settings, msg.chat.id, culprit, author_is_bot).await;
+
+    Ok(deleted)
 }
 
 /// A bot whose membership changed — the invite-link path, where there is no
@@ -132,6 +204,20 @@ async fn remove(
         Verdict::Ban => {}
     }
 
+    ban(bot, app, settings, chat_id, member, true).await;
+}
+
+/// Ban one bot that [`verdict`] already condemned.
+async fn ban(
+    bot: &Tg,
+    app: &Arc<App>,
+    settings: &crate::db::models::GroupSettings,
+    chat_id: ChatId,
+    member: &User,
+    announce_it: bool,
+) {
+    let user_id = member.id.0 as i64;
+
     // revoke_messages sweeps whatever it already managed to post, which for an
     // advertising bot is the entire reason it was added.
     match bot
@@ -154,7 +240,9 @@ async fn remove(
                 json!({ "user_id": user_id, "username": member.username }),
             )
             .await;
-            announce(bot, settings, chat_id, member).await;
+            if announce_it {
+                announce(bot, settings, chat_id, member).await;
+            }
         }
         Err(err) => {
             tracing::warn!(chat_id = chat_id.0, user_id, %err, "could not ban a bot");

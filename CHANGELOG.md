@@ -6,6 +6,21 @@ Notable changes to ZeroNSFWBot. Format follows
 
 ## [Unreleased]
 
+### Fixed — the bot lock only looked at bots as they arrived
+
+With *Ban unpromoted bots* on, a bot was judged when it joined and never again:
+`group.rs` dropped every message whose sender was a bot before anything could
+look at it. Anything that got through — a bot already in the group when the
+switch was turned on, or a message a member sent through an inline bot — went
+unchallenged. Both are now judged by the same rule as an arrival: an unpromoted
+bot that authored a message is banned and the message deleted, and a message
+sent *through* an unpromoted bot is deleted and that bot banned. An admin
+using an inline bot themselves is left alone, as are promoted bots and this bot.
+
+Telegram still does not deliver one bot's messages to another, so a bot that was
+already present and only posts directly stays invisible until it does something
+that is delivered. That is a limit of the Bot API, not of this check.
+
 ### Added — judging what people write, not just what they look like
 
 Everything in this bot up to now answered a question about an *account*: is this
